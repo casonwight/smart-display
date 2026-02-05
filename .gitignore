@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Debug files
+debug_*.png
+
+# Temporary files
+*.tmp
+.lgd-*
+
+# Models (large files - download separately)
+models/piper/
+models/kokoro/
+models/vosk-model-*/
+models/Hey-Ollie_en_raspberry-pi_v4_0_0.ppn
+*.ppn
+*.zip
+*.onnx
+*.bin
+*.mdl
+*.fst
+
+# Sensitive config (use config.example.py as template)
+config.py
+
+# Claude memory (local only)
+.claude/
