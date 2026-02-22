@@ -483,10 +483,18 @@ class MusicApp:
                         image_url = track.get("image_url", "")
                         if image_url:
                             self.cover_url = image_url
-                            # Kick off full-size cover download (may already be cached)
                             threading.Thread(
                                 target=self._download_cover,
                                 args=(image_url,), daemon=True).start()
+                        # For non-playlist sources, queue the next tracks so
+                        # playback continues automatically (like a normal queue)
+                        if context is None:
+                            def _queue_next():
+                                for nxt in self._list_items[item_idx + 1: item_idx + 6]:
+                                    nxt_uri = nxt.get("uri", "")
+                                    if nxt_uri:
+                                        self.spotify.add_to_queue(nxt_uri)
+                            threading.Thread(target=_queue_next, daemon=True).start()
                         self.music_state = MusicState.NOW_PLAYING
                     # If play failed, stay on list view (don't switch to blank NOW_PLAYING)
             return True

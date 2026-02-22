@@ -128,8 +128,9 @@ class SpotifyController:
             return True
         except Exception as e:
             print(f"[Spotify] API call failed: {e}")
-            # Invalidate device cache on error (device may have changed)
-            self._device_id = None
+            # Only invalidate device cache on connection errors, not playback restrictions
+            if "Restriction violated" not in str(e):
+                self._device_id = None
             return False
 
     def pause(self) -> bool:
@@ -345,3 +346,8 @@ class SpotifyController:
         """Start playing a playlist from the beginning."""
         device_id = self._get_device_id()
         return self._call(self._sp.start_playback, device_id=device_id, context_uri=context_uri)
+
+    def add_to_queue(self, uri: str) -> bool:
+        """Add a track URI to the playback queue."""
+        device_id = self._get_device_id()
+        return self._call(self._sp.add_to_queue, uri, device_id=device_id)

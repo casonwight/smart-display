@@ -141,6 +141,7 @@ class MainController:
         self._last_spotify_connected = False
         self._last_spotify_check = 0
         self._last_known_track = ""  # For on_new_track detection
+        self._mini_player_tick = 0   # Rate-limits mini player progress refresh on MENU
 
         # Debounce
         self._pending_update = threading.Event()
@@ -1403,25 +1404,23 @@ class MainController:
 
     def _on_music_progress_update(self):
         """Callback for music progress partial refresh."""
-        # Only update if we're actually viewing the music app
-        if self.state != AppState.MUSIC:
-            return
-
-        # Skip during voice overlay - direct refresh would erase the overlay
         if self._voice_overlay_state != VoiceOverlayState.IDLE:
             return
-
-        # Skip if a clear-first or full refresh is pending (let main render handle it)
         if self._needs_clear_first or self._needs_full_refresh:
             return
-
-        # Skip during cooldown after full refresh
         if time.time() < self._full_refresh_cooldown_until:
             return
 
-        # Use lock to prevent concurrent display operations with main render loop
-        with self._lock:
-            self.music_app.update_progress()
+        if self.state == AppState.MUSIC:
+            # Full progress bar partial refresh on the music screen
+            with self._lock:
+                self.music_app.update_progress()
+        elif self.state == AppState.MENU and self.music_app.track_name:
+            # Rate-limit mini player refresh on the main menu: every 5 seconds
+            self._mini_player_tick += 1
+            if self._mini_player_tick >= 5:
+                self._mini_player_tick = 0
+                self._schedule_update()
 
     def _check_spotify_connection(self):
         """Check if Spotify just connected and switch to music app."""
@@ -1560,6 +1559,7 @@ class MainController:
             elif self.state == AppState.HOME:
                 self.home_app.render()
             elif self.state == AppState.MENU:
+                self.menu_app.mini_player_active = bool(self.music_app.track_name)
                 self.menu_app.render()
             elif self.state == AppState.RECIPES:
                 self.recipe_app.render()
@@ -1608,6 +1608,7 @@ class MainController:
         elif self.state == AppState.HOME:
             self.home_app.render()
         elif self.state == AppState.MENU:
+            self.menu_app.mini_player_active = bool(self.music_app.track_name)
             self.menu_app.render()
         elif self.state == AppState.RECIPES:
             self.recipe_app.render()
@@ -1616,10 +1617,13 @@ class MainController:
         elif self.state == AppState.MUSIC:
             self.music_app.render()
 
-        # Draw mini player on non-home, non-music screens when music is playing
-        if (self.state not in (AppState.HOME, AppState.MUSIC)
-                and self.music_app.track_name
-                and self._voice_overlay_state == VoiceOverlayState.IDLE):
+        # Draw mini player on the main menu only (not on recipes/timers/music/home)
+        mini_player_showing = (
+            self.state == AppState.MENU
+            and bool(self.music_app.track_name)
+            and self._voice_overlay_state == VoiceOverlayState.IDLE
+        )
+        if mini_player_showing:
             draw = ImageDraw.Draw(self.renderer.framebuffer)
             self._draw_mini_player(self.renderer.framebuffer, draw)
 
