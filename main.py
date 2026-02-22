@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from display.renderer import DisplayRenderer
 from audio.player import AudioPlayer
+from audio.spotify_api import SpotifyController
 from audio.voice import VoiceController
 from audio.tts import create_tts
 from audio.weather import get_weather, format_weather_speech, format_temperature_speech
@@ -30,12 +31,12 @@ from apps.home import HomeApp
 from apps.menu import MenuApp, MenuItem
 from apps.recipes import RecipeApp
 from apps.timers import TimerApp, TimerState
-from apps.music import MusicApp, STATE_FILE as SPOTIFY_STATE_FILE
+from apps.music import MusicApp, MusicState, STATE_FILE as SPOTIFY_STATE_FILE
 from config import (
     ENCODER_PIN_A, ENCODER_PIN_B, ENCODER_PIN_SW,
     BUTTON_UP_PIN, BUTTON_DOWN_PIN,
     DISPLAY_WIDTH, DISPLAY_HEIGHT,
-    VOLUME_STEP
+    VOLUME_STEP, ASSETS_DIR
 )
 
 
@@ -46,6 +47,15 @@ class AppState(Enum):
     RECIPES = "recipes"
     TIMERS = "timers"
     MUSIC = "music"
+
+
+class VoiceOverlayState(Enum):
+    """Voice interaction overlay states."""
+    IDLE = "idle"
+    LISTENING = "listening"
+    THINKING = "thinking"
+    TALKING = "talking"
+    CONFUSED = "confused"
 
 
 class MainController:
@@ -83,6 +93,21 @@ class MainController:
         self.timer_app = TimerApp(self.renderer, self.audio)
         self.music_app = MusicApp(self.renderer)
 
+        # Initialize Spotify API controller (non-blocking - uses cached token only)
+        print("  - Spotify...")
+        self.spotify = SpotifyController()
+        self.music_app.spotify = self.spotify
+
+        # Mini player fonts
+        try:
+            self._mini_font_bold = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+            self._mini_font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15)
+        except OSError:
+            self._mini_font_bold = ImageFont.load_default()
+            self._mini_font = ImageFont.load_default()
+
         # State management
         self.state = AppState.HOME
         self.previous_state: Optional[AppState] = None  # For timer alarm return
@@ -102,6 +127,12 @@ class MainController:
         self.volume_overlay_active = False
         self.volume_overlay_hide_time = 0
 
+        # Voice overlay state
+        self._voice_overlay_state = VoiceOverlayState.IDLE
+        self._voice_overlay_icons = self._load_voice_icons()
+        self._talking_mouth_open = True
+        self._talking_animation_timer: Optional[threading.Timer] = None
+
         # Activity tracking for timeouts
         self.last_activity_time = time.time()
         self.last_music_playing_time = time.time()
@@ -109,6 +140,7 @@ class MainController:
         # Spotify connection tracking
         self._last_spotify_connected = False
         self._last_spotify_check = 0
+        self._last_known_track = ""  # For on_new_track detection
 
         # Debounce
         self._pending_update = threading.Event()
@@ -134,12 +166,14 @@ class MainController:
         # Initialize text-to-speech
         print("  - Text-to-speech...")
         self.tts = create_tts()
+        self.tts.on_speaking_changed = self._on_tts_speaking_changed
 
         # Initialize voice control
         print("  - Voice control...")
         self.voice = VoiceController(
             on_command_callback=self._on_voice_command,
-            audio_player=self.audio
+            audio_player=self.audio,
+            on_status_callback=self._on_voice_status,
         )
         self.voice.start()
 
@@ -225,6 +259,11 @@ class MainController:
 
         self._record_activity()
 
+        # Stop TTS if currently talking
+        if self._voice_overlay_state == VoiceOverlayState.TALKING:
+            self.tts.stop()
+            return
+
         # Timer alarm: dismiss and return to previous screen
         if self.timer_alarm_active:
             self._dismiss_timer_alarm()
@@ -251,14 +290,17 @@ class MainController:
             elif selected == MenuItem.MUSIC:
                 self._change_state(AppState.MUSIC)
         elif self.state == AppState.RECIPES:
-            # select() returns False (back to menu), True (handled), or (seconds, label) for timer
+            # select() returns False (back to menu), True (handled), or (seconds, label, action) for timer
             result = self.recipe_app.select()
             if result is False:
                 self._change_state(AppState.MENU)
             elif isinstance(result, tuple):
-                # Timer button pressed - create the timer
-                seconds, label = result
-                self._create_timer_from_recipe(seconds, label)
+                # Timer button pressed - add or remove timer
+                seconds, label, action = result
+                if action == "add":
+                    self._create_timer_from_recipe(seconds, label)
+                elif action == "remove":
+                    self._remove_timer_from_recipe(seconds, label)
         elif self.state == AppState.TIMERS:
             # select() returns False when back button pressed
             if not self.timer_app.select():
@@ -294,12 +336,14 @@ class MainController:
         """Handle volume up button."""
         self._record_activity()
         new_volume = self.audio.volume_up()
+        self.tts.volume = new_volume
         self._show_volume_overlay(new_volume)
 
     def _on_volume_down(self):
         """Handle volume down button."""
         self._record_activity()
         new_volume = self.audio.volume_down()
+        self.tts.volume = new_volume
         self._show_volume_overlay(new_volume)
 
     def _create_timer_from_recipe(self, seconds: int, label: str):
@@ -320,6 +364,16 @@ class MainController:
         )
         self.timer_app.timers.append(timer)
         print(f"  [Recipe timer: Added {seconds//60}m timer '{label}']")
+
+    def _remove_timer_from_recipe(self, seconds: int, label: str):
+        """Remove a timer that was created from a recipe timer button."""
+        # Find timer by label and duration
+        for timer in self.timer_app.timers:
+            if timer.label == label and timer.total_seconds == seconds:
+                self.timer_app.timers.remove(timer)
+                print(f"  [Recipe timer: Removed {seconds//60}m timer '{label}']")
+                return
+        print(f"  [Recipe timer: Timer not found '{label}']")
 
     # ==================== Voice Command Handler ====================
 
@@ -353,10 +407,12 @@ class MainController:
                 self._change_state(AppState.TIMERS)
                 self._schedule_update()
             else:
-                # Create and start a timer
-                minutes = params.get("minutes", 5)
-                print(f"  [Voice: Starting {minutes} minute timer]")
-                total_seconds = minutes * 60
+                # Create and start a timer (use exact seconds from parser)
+                total_seconds = params.get("seconds", params.get("minutes", 5) * 60)
+                if total_seconds >= 60:
+                    print(f"  [Voice: Starting {total_seconds // 60} minute timer]")
+                else:
+                    print(f"  [Voice: Starting {total_seconds} second timer]")
                 from apps.timers import Timer
                 timer = Timer(
                     id=str(uuid.uuid4()),
@@ -577,9 +633,10 @@ class MainController:
             recipe_name = params.get("name", "")
 
             recipe = None
-            if use_current and self.recipe_app.current_recipe:
-                recipe = self.recipe_app.current_recipe
-                recipe_name = recipe.name
+            if use_current:
+                recipe = self._get_context_recipe()
+                if recipe:
+                    recipe_name = recipe.name
             elif recipe_name:
                 recipe = self._find_recipe(recipe_name)
 
@@ -593,7 +650,7 @@ class MainController:
                     self.tts.speak_async(f"I don't have a cook time for {recipe_name}.")
             else:
                 if use_current:
-                    self.tts.speak_async("No recipe is currently open.")
+                    self.tts.speak_async("I'm not sure which recipe you mean. Try saying the recipe name.")
                 else:
                     self.tts.speak_async(f"Sorry, I couldn't find a recipe for {recipe_name}.")
                 print(f"  [Voice: Recipe not found]")
@@ -604,9 +661,10 @@ class MainController:
             recipe_name = params.get("name", "")
 
             recipe = None
-            if use_current and self.recipe_app.current_recipe:
-                recipe = self.recipe_app.current_recipe
-                recipe_name = recipe.name
+            if use_current:
+                recipe = self._get_context_recipe()
+                if recipe:
+                    recipe_name = recipe.name
             elif recipe_name:
                 recipe = self._find_recipe(recipe_name)
 
@@ -642,7 +700,7 @@ class MainController:
                     self.tts.speak_async(f"I couldn't find a baking time for {recipe_name}.")
             else:
                 if use_current:
-                    self.tts.speak_async("No recipe is currently open.")
+                    self.tts.speak_async("I'm not sure which recipe you mean. Try saying the recipe name.")
                 else:
                     self.tts.speak_async(f"Sorry, I couldn't find a recipe for {recipe_name}.")
                 print(f"  [Voice: Recipe not found]")
@@ -653,9 +711,10 @@ class MainController:
             recipe_name = params.get("name", "")
 
             recipe = None
-            if use_current and self.recipe_app.current_recipe:
-                recipe = self.recipe_app.current_recipe
-                recipe_name = recipe.name
+            if use_current:
+                recipe = self._get_context_recipe()
+                if recipe:
+                    recipe_name = recipe.name
             elif recipe_name:
                 recipe = self._find_recipe(recipe_name)
 
@@ -684,7 +743,7 @@ class MainController:
                     self.tts.speak_async(f"I couldn't find an oven temperature for {recipe_name}.")
             else:
                 if use_current:
-                    self.tts.speak_async("No recipe is currently open.")
+                    self.tts.speak_async("I'm not sure which recipe you mean. Try saying the recipe name.")
                 else:
                     self.tts.speak_async(f"Sorry, I couldn't find a recipe for {recipe_name}.")
                 print(f"  [Voice: Recipe not found]")
@@ -730,6 +789,18 @@ class MainController:
             self._change_state(AppState.MUSIC)
             self._schedule_update()
 
+        # === DISPLAY COMMANDS ===
+        elif intent == "refresh_screen":
+            print(f"  [Voice: Refreshing screen]")
+            if self.state == AppState.HOME:
+                # On home screen, simulate re-entering home (reload wallpaper + clear-first)
+                self.home_app.reload_wallpaper()
+                self._needs_clear_first = True
+                self._schedule_update()
+            else:
+                # On other screens, do a deep refresh
+                self._do_deep_refresh()
+
         # === WEATHER COMMANDS ===
         elif intent == "weather":
             print(f"  [Voice: Fetching weather]")
@@ -774,21 +845,83 @@ class MainController:
             print(f"  [Voice: Date - {speech}]")
             self.tts.speak_async(speech)
 
-        # === SPOTIFY COMMANDS (paused - Spotify API unavailable) ===
+        # === SPOTIFY COMMANDS ===
         elif intent == "spotify_play":
             query = params.get("query", "")
-            print(f"  [Voice: Play request for '{query}' - Spotify API not available]")
-            self.tts.speak_async("Sorry, Spotify control isn't available right now.")
-            self._change_state(AppState.MUSIC)
-            self._schedule_update()
+            if not self.spotify.available:
+                print(f"  [Voice: Play '{query}' - Spotify not configured]")
+                self.tts.speak_async("Spotify isn't set up yet.")
+            elif query:
+                print(f"  [Voice: Searching Spotify for '{query}']")
+                self._change_state(AppState.MUSIC)
+                self._schedule_update()
+                # Run search in background so TTS doesn't block
+                def _search_and_play():
+                    track = self.spotify.play_search(query)
+                    if track:
+                        self.tts.speak_async(f"Playing {track}.")
+                    else:
+                        self.tts.speak_async(f"Couldn't find {query} on Spotify.")
+                threading.Thread(target=_search_and_play, daemon=True).start()
+            else:
+                print(f"  [Voice: Resume playback]")
+                self.spotify.resume()
+                self._change_state(AppState.MUSIC)
+                self._schedule_update()
+                self.tts.speak_async("Resuming.")
 
         elif intent == "spotify_pause":
-            print(f"  [Voice: Pause music - Spotify API not available]")
-            self.tts.speak_async("Sorry, Spotify control isn't available right now.")
+            if not self.spotify.available:
+                print(f"  [Voice: Pause - Spotify not configured]")
+                self.tts.speak_async("Spotify isn't set up yet.")
+            elif self.music_app.is_playing:
+                print(f"  [Voice: Pausing music]")
+                self.spotify.pause()
+                self.tts.speak_async("Paused.")
+            else:
+                print(f"  [Voice: Resuming music]")
+                self.spotify.resume()
+                self.tts.speak_async("Resuming.")
 
         elif intent == "spotify_skip":
-            print(f"  [Voice: Skip track - Spotify API not available]")
-            self.tts.speak_async("Sorry, Spotify control isn't available right now.")
+            if not self.spotify.available:
+                print(f"  [Voice: Skip - Spotify not configured]")
+                self.tts.speak_async("Spotify isn't set up yet.")
+            else:
+                print(f"  [Voice: Skipping track]")
+                self.spotify.next_track()
+                self.tts.speak_async("Skipping.")
+
+    def _get_context_recipe(self):
+        """
+        Get the contextually valid 'current recipe'.
+
+        Returns a recipe only if:
+        1. We're currently viewing a recipe (AppState.RECIPES + RecipeState.RECIPE_VIEW), OR
+        2. There's exactly one active timer with a recipe label
+
+        Returns None otherwise.
+        """
+        from apps.recipes import RecipeState
+
+        # Case 1: Currently viewing a recipe
+        if (self.state == AppState.RECIPES and
+            self.recipe_app.state == RecipeState.RECIPE_VIEW and
+            self.recipe_app.current_recipe):
+            return self.recipe_app.current_recipe
+
+        # Case 2: Single active timer with a recipe label
+        active_timers = [t for t in self.timer_app.timers
+                        if not t.paused and t.remaining_seconds > 0 and t.label]
+
+        if len(active_timers) == 1:
+            # Find the recipe by the timer's label
+            timer_label = active_timers[0].label
+            recipe = self._find_recipe(timer_label)
+            if recipe:
+                return recipe
+
+        return None
 
     def _search_and_open_recipe(self, search_term: str) -> bool:
         """Search for a recipe by name and open it if found. Uses word-by-word matching."""
@@ -934,9 +1067,14 @@ class MainController:
         if new_state == AppState.HOME and old_state != AppState.HOME:
             self.home_app.reload_wallpaper()
 
-        # Reset music timeout when entering music app
+        # Reset music timeout and entry state when entering music app
         if new_state == AppState.MUSIC:
+            self.music_app.reset_to_entry_state()
             self.last_music_playing_time = time.time()
+
+        # Reload recipes when entering recipes app (picks up newly added recipes)
+        if new_state == AppState.RECIPES:
+            self.recipe_app.reload_recipes()
 
     def _go_back(self) -> bool:
         """
@@ -1083,6 +1221,169 @@ class MainController:
                 fill=0
             )
 
+    # ==================== Voice Status Overlay ====================
+
+    def _load_voice_icons(self) -> dict:
+        """Load voice status overlay icons, cropped to remove whitespace border."""
+        icons = {}
+        icon_dir = os.path.join(ASSETS_DIR, "app-icons")
+        icon_size = 300
+
+        for name in ["listening-icon", "thinking-icon", "talking-open-icon", "talking-closed-icon", "confused-icon"]:
+            path = os.path.join(icon_dir, f"{name}.png")
+            if os.path.exists(path):
+                img = Image.open(path)
+                # Crop 15% from all sides to remove whitespace border
+                w, h = img.size
+                margin_x = int(w * 0.15)
+                margin_y = int(h * 0.15)
+                img = img.crop((margin_x, margin_y, w - margin_x, h - margin_y))
+                img.thumbnail((icon_size, icon_size), Image.Resampling.LANCZOS)
+                icons[name] = img.convert('L').convert('1')
+            else:
+                print(f"  [Warning: Voice icon not found: {path}]")
+                icons[name] = None
+        return icons
+
+    def _on_voice_status(self, status: str):
+        """Called from voice thread when voice interaction state changes."""
+        print(f"  [Voice status: {status}]")
+
+        if status == "listening":
+            self._voice_overlay_state = VoiceOverlayState.LISTENING
+            # Non-blocking: refresh in background so voice thread starts recording immediately
+            threading.Thread(target=self._draw_voice_overlay_immediate, daemon=True).start()
+        elif status == "thinking":
+            self._voice_overlay_state = VoiceOverlayState.THINKING
+            self._draw_voice_overlay_immediate()
+        elif status == "command_done":
+            # Command handler finished. If TTS was triggered, overlay will
+            # transition to TALKING via on_speaking_changed. If not, clear
+            # the overlay after a brief grace period.
+            def _check_idle():
+                time.sleep(0.5)
+                if self._voice_overlay_state in (VoiceOverlayState.THINKING, VoiceOverlayState.LISTENING):
+                    self._voice_overlay_state = VoiceOverlayState.IDLE
+                    self._schedule_update()
+            threading.Thread(target=_check_idle, daemon=True).start()
+        elif status == "confused":
+            self._voice_overlay_state = VoiceOverlayState.CONFUSED
+            self._draw_voice_overlay_immediate()
+            # Show confused icon for 2 seconds then clear
+            def _clear_confused():
+                time.sleep(2)
+                if self._voice_overlay_state == VoiceOverlayState.CONFUSED:
+                    self._voice_overlay_state = VoiceOverlayState.IDLE
+                    self._schedule_update()
+            threading.Thread(target=_clear_confused, daemon=True).start()
+        elif status == "idle":
+            self._stop_talking_animation()
+            self._voice_overlay_state = VoiceOverlayState.IDLE
+            self._schedule_update()
+
+    def _on_tts_speaking_changed(self, is_speaking: bool):
+        """Called from TTS thread when speech starts/stops."""
+        if is_speaking:
+            self._voice_overlay_state = VoiceOverlayState.TALKING
+            self._talking_mouth_open = False  # Start closed
+            self._draw_voice_overlay_immediate()
+            self._start_talking_animation()
+        else:
+            self._stop_talking_animation()
+            self._voice_overlay_state = VoiceOverlayState.IDLE
+            self._schedule_update()
+
+    def _start_talking_animation(self):
+        """Start the talking mouth animation loop."""
+        self._stop_talking_animation()
+        # Start with a brief pause then first open burst
+        self._talking_animation_timer = threading.Timer(0.3, self._talking_open_burst)
+        self._talking_animation_timer.daemon = True
+        self._talking_animation_timer.start()
+
+    def _talking_open_burst(self):
+        """Open mouth briefly, then close and schedule next burst."""
+        if self._voice_overlay_state != VoiceOverlayState.TALKING:
+            return
+        # Open mouth
+        self._talking_mouth_open = True
+        self._draw_voice_overlay_immediate()
+        # Close after a short burst (150-200ms)
+        import random
+        close_delay = random.uniform(0.15, 0.25)
+        self._talking_animation_timer = threading.Timer(close_delay, self._talking_close_and_wait)
+        self._talking_animation_timer.daemon = True
+        self._talking_animation_timer.start()
+
+    def _talking_close_and_wait(self):
+        """Close mouth and wait before next open burst."""
+        if self._voice_overlay_state != VoiceOverlayState.TALKING:
+            return
+        # Close mouth
+        self._talking_mouth_open = False
+        self._draw_voice_overlay_immediate()
+        # Wait before next burst (400-700ms)
+        import random
+        wait_delay = random.uniform(0.4, 0.7)
+        self._talking_animation_timer = threading.Timer(wait_delay, self._talking_open_burst)
+        self._talking_animation_timer.daemon = True
+        self._talking_animation_timer.start()
+
+    def _stop_talking_animation(self):
+        """Stop the talking mouth animation."""
+        if self._talking_animation_timer:
+            self._talking_animation_timer.cancel()
+            self._talking_animation_timer = None
+
+    def _draw_voice_overlay_immediate(self):
+        """Draw voice overlay icon and do an immediate partial refresh."""
+        with self._lock:
+            self._draw_voice_overlay_on_framebuffer()
+            # Partial refresh just the overlay region
+            if not self.renderer.in_partial_mode:
+                self.renderer.init_partial()
+            buf = self.renderer.epd.getbuffer(self.renderer.framebuffer)
+            self.renderer.epd.display_Partial(buf, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT)
+
+    def _draw_voice_overlay_on_framebuffer(self):
+        """Draw the voice status icon overlay centered on screen."""
+        if self._voice_overlay_state == VoiceOverlayState.LISTENING:
+            icon = self._voice_overlay_icons.get("listening-icon")
+        elif self._voice_overlay_state == VoiceOverlayState.THINKING:
+            icon = self._voice_overlay_icons.get("thinking-icon")
+        elif self._voice_overlay_state == VoiceOverlayState.TALKING:
+            if self._talking_mouth_open:
+                icon = self._voice_overlay_icons.get("talking-open-icon")
+            else:
+                icon = self._voice_overlay_icons.get("talking-closed-icon")
+        elif self._voice_overlay_state == VoiceOverlayState.CONFUSED:
+            icon = self._voice_overlay_icons.get("confused-icon")
+        else:
+            return
+
+        if not icon:
+            return
+
+        draw = ImageDraw.Draw(self.renderer.framebuffer)
+
+        # Overlay box dimensions
+        padding = 10
+        box_w = icon.width + padding * 2
+        box_h = icon.height + padding * 2
+        box_x = (DISPLAY_WIDTH - box_w) // 2
+        box_y = (DISPLAY_HEIGHT - box_h) // 2
+
+        # White background with rounded rectangle border
+        draw.rounded_rectangle(
+            [box_x, box_y, box_x + box_w, box_y + box_h],
+            radius=20, fill=1, outline=0, width=3
+        )
+
+        # Paste icon centered in box
+        icon_x = box_x + padding
+        icon_y = box_y + padding
+        self.renderer.framebuffer.paste(icon, (icon_x, icon_y))
+
     # ==================== Callbacks ====================
 
     def _on_timer_update(self):
@@ -1090,16 +1391,37 @@ class MainController:
         self._schedule_update()
 
     def _on_music_update(self):
-        """Callback when music app needs update (track change)."""
-        # Check if Spotify just connected
+        """Callback when music app needs update (track change or play state)."""
         self._check_spotify_connection()
+        # Snap to NOW_PLAYING only when the track name actually changes
+        # (not on play/pause or list-load callbacks - those would kick the user out of browse views)
+        current_track = self.music_app.track_name
+        if self.state == AppState.MUSIC and current_track and current_track != self._last_known_track:
+            self.music_app.on_new_track()
+        self._last_known_track = current_track
         self._schedule_update()
 
     def _on_music_progress_update(self):
         """Callback for music progress partial refresh."""
-        # Disabled - partial refresh of just progress bar was causing display issues
-        # Full screen refresh is more reliable
-        pass
+        # Only update if we're actually viewing the music app
+        if self.state != AppState.MUSIC:
+            return
+
+        # Skip during voice overlay - direct refresh would erase the overlay
+        if self._voice_overlay_state != VoiceOverlayState.IDLE:
+            return
+
+        # Skip if a clear-first or full refresh is pending (let main render handle it)
+        if self._needs_clear_first or self._needs_full_refresh:
+            return
+
+        # Skip during cooldown after full refresh
+        if time.time() < self._full_refresh_cooldown_until:
+            return
+
+        # Use lock to prevent concurrent display operations with main render loop
+        with self._lock:
+            self.music_app.update_progress()
 
     def _check_spotify_connection(self):
         """Check if Spotify just connected and switch to music app."""
@@ -1124,6 +1446,57 @@ class MainController:
             self.last_music_playing_time = now
 
         self._last_spotify_connected = is_connected
+
+    # ==================== Mini Player ====================
+
+    def _draw_mini_player(self, img: Image.Image, draw: ImageDraw.Draw):
+        """Draw a compact now-playing strip at y=430-480."""
+        Y_TOP = 430
+
+        draw.line([(0, Y_TOP), (DISPLAY_WIDTH, Y_TOP)], fill=0, width=1)
+
+        # Thumbnail (32x32)
+        thumb = self.music_app.get_current_thumbnail(32)
+        thumb_x, thumb_y = 5, Y_TOP + 9
+        if thumb:
+            img.paste(thumb, (thumb_x, thumb_y))
+        else:
+            draw.rectangle(
+                [thumb_x, thumb_y, thumb_x + 32, thumb_y + 32], outline=0, width=1)
+            draw.text((thumb_x + 8, thumb_y + 8), "♪", font=self._mini_font, fill=0)
+
+        # Track name and artist
+        text_x = 45
+        max_text_w = 470
+
+        track = self.music_app.track_name.replace("\n", " ")
+        artist = self.music_app.artist_name.replace("\n", ", ")
+        track_trunc = self.music_app._truncate_text(track, self._mini_font_bold, max_text_w)
+        artist_trunc = self.music_app._truncate_text(artist, self._mini_font, max_text_w)
+
+        draw.text((text_x, Y_TOP + 5), track_trunc, font=self._mini_font_bold, fill=0)
+        draw.text((text_x, Y_TOP + 27), artist_trunc, font=self._mini_font, fill=0)
+
+        # Progress bar (right side)
+        bar_x = 530
+        bar_w = 180
+        bar_y = Y_TOP + 20
+        bar_h = 6
+        draw.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], outline=0, width=1)
+        if self.music_app.duration_ms > 0:
+            progress = min(1.0, self.music_app.position_ms / self.music_app.duration_ms)
+            fill_w = int(bar_w * progress)
+            if fill_w > 2:
+                draw.rectangle(
+                    [bar_x + 1, bar_y + 1, bar_x + fill_w - 1, bar_y + bar_h - 1], fill=0)
+
+        # Time display
+        current_time = self.music_app._format_time(self.music_app.position_ms)
+        total_time = self.music_app._format_time(self.music_app.duration_ms)
+        time_str = f"{current_time} / {total_time}"
+        time_bbox = draw.textbbox((0, 0), time_str, font=self._mini_font)
+        time_x = DISPLAY_WIDTH - (time_bbox[2] - time_bbox[0]) - 8
+        draw.text((time_x, Y_TOP + 31), time_str, font=self._mini_font, fill=0)
 
     # ==================== Timeout Handling ====================
 
@@ -1163,19 +1536,71 @@ class MainController:
 
     # ==================== Rendering ====================
 
-    def _render(self):
-        """Render the current state to the display."""
-        # Clear-first: do a white partial refresh before rendering content
-        # This helps clear dark pixels without a full blink
-        if self._needs_clear_first and not self._needs_full_refresh:
-            # Must be in partial mode before calling display_Partial
-            if not self.renderer.in_partial_mode:
-                self.renderer.init_partial()
+    def _do_deep_refresh(self):
+        """Do a thorough two-stage refresh to fully clear ghosting.
+
+        Stage 1: Full refresh to white (clears all dark pixels completely)
+        Stage 2: Full refresh with actual content
+        """
+        with self._lock:
+            # Stage 1: Clear to white with full refresh
+            print("  [Deep refresh - stage 1: clear to white]")
+            self.renderer.init()
             white_img = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), 1)
             white_buf = self.renderer.epd.getbuffer(white_img)
-            self.renderer.epd.display_Partial(white_buf, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT)
+            self.renderer.epd.display(white_buf)
+
+            # Stage 2: Render actual content with full refresh
+            print("  [Deep refresh - stage 2: render content]")
+            self.renderer.init()  # Re-init for second full refresh
+
+            # Render current screen to framebuffer
+            if self.timer_alarm_active:
+                self.timer_app._render_alarm()
+            elif self.state == AppState.HOME:
+                self.home_app.render()
+            elif self.state == AppState.MENU:
+                self.menu_app.render()
+            elif self.state == AppState.RECIPES:
+                self.recipe_app.render()
+            elif self.state == AppState.TIMERS:
+                self.timer_app.render()
+            elif self.state == AppState.MUSIC:
+                self.music_app.render()
+
+            # Display the content
+            buf = self.renderer.epd.getbuffer(self.renderer.framebuffer)
+            self.renderer.epd.display(buf)
+
+            # Reset state
+            self.renderer.in_partial_mode = False
+            self._needs_full_refresh = False
             self._needs_clear_first = False
-            print("  [Clear refresh]")
+            self._partial_refresh_count = 0
+            self._full_refresh_cooldown_until = time.time() + 1.0
+            print("  [Deep refresh complete]")
+
+    def _render(self):
+        """Render the current state to the display."""
+        # Use lock to prevent concurrent display operations with progress updates
+        with self._lock:
+            self._render_internal()
+
+    def _render_internal(self):
+        """Internal render - must be called with _lock held."""
+        # Clear-first: do a white partial refresh before rendering content
+        # This helps clear dark pixels without a full blink
+        # Defer clear-first while voice overlay is active to avoid flashing the overlay away
+        if self._needs_clear_first and not self._needs_full_refresh:
+            if self._voice_overlay_state == VoiceOverlayState.IDLE:
+                # Must be in partial mode before calling display_Partial
+                if not self.renderer.in_partial_mode:
+                    self.renderer.init_partial()
+                white_img = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), 1)
+                white_buf = self.renderer.epd.getbuffer(white_img)
+                self.renderer.epd.display_Partial(white_buf, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT)
+                self._needs_clear_first = False
+                print("  [Clear refresh]")
 
         # Timer alarm takes priority
         if self.timer_alarm_active:
@@ -1191,9 +1616,20 @@ class MainController:
         elif self.state == AppState.MUSIC:
             self.music_app.render()
 
+        # Draw mini player on non-home, non-music screens when music is playing
+        if (self.state not in (AppState.HOME, AppState.MUSIC)
+                and self.music_app.track_name
+                and self._voice_overlay_state == VoiceOverlayState.IDLE):
+            draw = ImageDraw.Draw(self.renderer.framebuffer)
+            self._draw_mini_player(self.renderer.framebuffer, draw)
+
         # Draw volume overlay on framebuffer if active
         if self.volume_overlay_active:
             self._draw_volume_on_framebuffer()
+
+        # Draw voice status overlay on framebuffer if active
+        if self._voice_overlay_state != VoiceOverlayState.IDLE:
+            self._draw_voice_overlay_on_framebuffer()
 
         # Check if full refresh is needed
         self._partial_refresh_count += 1
@@ -1260,7 +1696,8 @@ class MainController:
                 self._check_spotify_connection()
 
                 # Update home screen time (if on home)
-                if self.state == AppState.HOME and not self.timer_alarm_active:
+                # Skip during voice overlay - the direct refresh would erase the overlay
+                if self.state == AppState.HOME and not self.timer_alarm_active and self._voice_overlay_state == VoiceOverlayState.IDLE:
                     if self._skip_next_home_update:
                         self._skip_next_home_update = False
                     elif time.time() < self._full_refresh_cooldown_until:
@@ -1281,6 +1718,7 @@ class MainController:
     def shutdown(self):
         """Clean shutdown of all components."""
         print("Cleaning up...")
+        self._stop_talking_animation()
         self.voice.stop()
         self.timer_app.shutdown()
         self.music_app.shutdown()
