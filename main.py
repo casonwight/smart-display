@@ -1456,7 +1456,10 @@ class MainController:
             return False
         if self.state == AppState.MUSIC and self.music_app.music_state == MusicState.NOW_PLAYING:
             return False
-        if self.state == AppState.RECIPES and self.recipe_app.state == RecipeState.RECIPE_VIEW:
+        if self.state == AppState.RECIPES and self.recipe_app.state not in (
+                RecipeState.CATEGORIES, RecipeState.RECIPE_LIST):
+            return False
+        if self.state == AppState.TIMERS and self.timer_app.state != TimerState.LIST:
             return False
         return True
 
@@ -1575,8 +1578,10 @@ class MainController:
                 self.menu_app.mini_player_active = mini_showing
                 self.menu_app.render()
             elif self.state == AppState.RECIPES:
+                self.recipe_app.mini_player_active = mini_showing
                 self.recipe_app.render()
             elif self.state == AppState.TIMERS:
+                self.timer_app.mini_player_active = mini_showing
                 self.timer_app.render()
             elif self.state == AppState.MUSIC:
                 self.music_app.render()
@@ -1628,8 +1633,10 @@ class MainController:
             self.menu_app.mini_player_active = mini_showing
             self.menu_app.render()
         elif self.state == AppState.RECIPES:
+            self.recipe_app.mini_player_active = mini_showing
             self.recipe_app.render()
         elif self.state == AppState.TIMERS:
+            self.timer_app.mini_player_active = mini_showing
             self.timer_app.render()
         elif self.state == AppState.MUSIC:
             self.music_app.render()

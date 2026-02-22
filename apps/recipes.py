@@ -79,6 +79,7 @@ class RecipeState(Enum):
     CATEGORIES = 0
     RECIPE_LIST = 1
     RECIPE_VIEW = 2
+    DELETE_CONFIRM = 3  # Confirmation popup for deleting a recipe
 
 
 @dataclass
@@ -190,6 +191,8 @@ def parse_cooklang(content: str, name: str) -> Recipe:
         display_line = line
         # Replace @ingredient{amount%unit} with just ingredient name (including @? for optional)
         display_line = re.sub(r'@\??([\w\s-]+?)\{[^}]*\}', r'\1', display_line)
+        # Replace @ingredient or @?ingredient WITHOUT braces (just the ingredient name)
+        display_line = re.sub(r'@\??([\w\s-]+?)(?=\s|$|,|\.|\()', r'\1', display_line)
         # Replace #cookware{} with just cookware name
         display_line = re.sub(r'#([\w\s-]+?)\{[^}]*\}', r'\1', display_line)
         # Replace #cookware (without braces) with just cookware name
@@ -201,6 +204,8 @@ def parse_cooklang(content: str, name: str) -> Recipe:
         display_line = re.sub(r'~\{([^}]+)\}', format_time, display_line)
         # Remove parenthetical notes like (90°F to 95°F)
         display_line = re.sub(r'\([^)]*°[^)]*\)', '', display_line)
+        # Add space before opening parenthesis if not already present
+        display_line = re.sub(r'(\S)\(', r'\1 (', display_line)
         # Clean up extra spaces
         display_line = re.sub(r'\s+', ' ', display_line).strip()
 
@@ -245,9 +250,18 @@ class RecipeApp:
 
         # Recipe view footer state
         self.recipe_timings: list[Tuple[int, str]] = []  # (seconds, label) for timer buttons
-        self.footer_selected = 0  # 0 = Back, 1+ = timer buttons
+        self.footer_selected = 0  # 0 = Back, 1 = Delete, 2+ = timer buttons
         self.footer_scroll = 0  # Horizontal scroll offset for footer buttons
         self.timers_added: set[int] = set()  # Indices of timer buttons that have been clicked
+
+        # Delete confirmation state
+        self.delete_confirm_selected = 0  # 0 = Nevermind (default), 1 = Delete
+
+        # Set by main.py before render() when mini player occupies y=430-480
+        self.mini_player_active = False
+
+        # Load sad icon for delete confirmation
+        self.sad_icon = self._load_sad_icon()
 
         # Load categories
         self._load_categories()
@@ -255,6 +269,16 @@ class RecipeApp:
         # Register region for the entire list area (for partial refresh)
         list_height = self.ITEM_HEIGHT * self.MAX_VISIBLE
         self.renderer.add_region("recipe_list", 0, self.LIST_START_Y, DISPLAY_WIDTH, list_height)
+
+    def _load_sad_icon(self):
+        """Load the sad icon for delete confirmation."""
+        from config import ASSETS_DIR
+        icon_path = os.path.join(ASSETS_DIR, "app-icons", "sad-icon.png")
+        if os.path.exists(icon_path):
+            img = Image.open(icon_path)
+            img.thumbnail((80, 80), Image.Resampling.LANCZOS)
+            return img.convert('L').convert('1')
+        return None
 
     def _load_categories(self):
         """Load category folders from recipe directory."""
@@ -326,14 +350,15 @@ class RecipeApp:
         if self.scroll_offset > 0:
             draw.text((DISPLAY_WIDTH - 40, 65), "^", font=item_font, fill=0)
         if visible_end < total_items:
-            draw.text((DISPLAY_WIDTH - 40, DISPLAY_HEIGHT - 80), "v", font=item_font, fill=0)
+            draw.text((DISPLAY_WIDTH - 40, DISPLAY_HEIGHT - 95), "v", font=item_font, fill=0)
 
-        # Draw footer hint
-        draw.line([(0, DISPLAY_HEIGHT - 55), (DISPLAY_WIDTH, DISPLAY_HEIGHT - 55)], fill=0, width=2)
-        hint = "Turn: Navigate   Press: Select   Hold: Home"
-        bbox = draw.textbbox((0, 0), hint, font=small_font)
-        hint_x = (DISPLAY_WIDTH - (bbox[2] - bbox[0])) // 2
-        draw.text((hint_x, DISPLAY_HEIGHT - 40), hint, font=small_font, fill=0)
+        # Draw footer hint (hidden when mini player occupies the bottom strip)
+        if not self.mini_player_active:
+            draw.line([(0, DISPLAY_HEIGHT - 55), (DISPLAY_WIDTH, DISPLAY_HEIGHT - 55)], fill=0, width=2)
+            hint = "Turn: Navigate   Press: Select   Hold: Home"
+            bbox = draw.textbbox((0, 0), hint, font=small_font)
+            hint_x = (DISPLAY_WIDTH - (bbox[2] - bbox[0])) // 2
+            draw.text((hint_x, DISPLAY_HEIGHT - 40), hint, font=small_font, fill=0)
 
         self.renderer.framebuffer = img
 
@@ -554,8 +579,8 @@ class RecipeApp:
         # Footer with back button and timer buttons
         draw.line([(0, DISPLAY_HEIGHT - 45), (DISPLAY_WIDTH, DISPLAY_HEIGHT - 45)], fill=0, width=1)
 
-        # Build footer buttons: Back + timer buttons
-        footer_buttons = [("← Back", None)]  # (label, seconds or None for back)
+        # Build footer buttons: Back + Delete + timer buttons
+        footer_buttons = [("← Back", "back"), ("Delete", "delete")]
         for seconds, label in self.recipe_timings:
             footer_buttons.append((label, seconds))
 
@@ -573,7 +598,8 @@ class RecipeApp:
         # Determine visible buttons based on scroll
         total_buttons = len(footer_buttons)
         visible_start = self.footer_scroll
-        x = 15
+        # Start buttons further right when left scroll indicator is showing
+        x = 25 if self.footer_scroll > 0 else 15
         last_visible_idx = visible_start
 
         # Draw visible buttons
@@ -586,7 +612,7 @@ class RecipeApp:
                 break
 
             is_selected = (i == self.footer_selected)
-            is_timer_added = (i > 0) and ((i - 1) in self.timers_added)
+            is_timer_added = (i > 1) and ((i - 2) in self.timers_added)  # Timer buttons start at index 2
 
             if is_timer_added:
                 # Timer already added - draw inverted (filled black, white text)
@@ -622,6 +648,87 @@ class RecipeApp:
 
         self.renderer.framebuffer = img
 
+    def _render_delete_confirm(self):
+        """Render the delete confirmation popup."""
+        img = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), 1)
+        draw = ImageDraw.Draw(img)
+
+        # Load fonts
+        try:
+            title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+            button_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
+        except:
+            title_font = button_font = ImageFont.load_default()
+
+        # Draw popup box (centered)
+        popup_w, popup_h = 400, 280
+        popup_x = (DISPLAY_WIDTH - popup_w) // 2
+        popup_y = (DISPLAY_HEIGHT - popup_h) // 2
+
+        # Popup background with border
+        draw.rectangle([popup_x, popup_y, popup_x + popup_w, popup_y + popup_h], fill=1, outline=0, width=3)
+
+        # Sad icon (centered at top of popup)
+        if self.sad_icon:
+            icon_x = popup_x + (popup_w - self.sad_icon.width) // 2
+            icon_y = popup_y + 20
+            img.paste(self.sad_icon, (icon_x, icon_y))
+            text_y = icon_y + self.sad_icon.height + 15
+        else:
+            text_y = popup_y + 30
+
+        # Title text
+        title = "Delete this recipe?"
+        title_bbox = draw.textbbox((0, 0), title, font=title_font)
+        title_w = title_bbox[2] - title_bbox[0]
+        draw.text((popup_x + (popup_w - title_w) // 2, text_y), title, font=title_font, fill=0)
+
+        # Recipe name
+        recipe_name = self._format_name(self.current_recipe.name) if self.current_recipe else "Recipe"
+        name_bbox = draw.textbbox((0, 0), recipe_name, font=button_font)
+        name_w = name_bbox[2] - name_bbox[0]
+        # Truncate if too long
+        if name_w > popup_w - 40:
+            while name_w > popup_w - 40 and len(recipe_name) > 10:
+                recipe_name = recipe_name[:-4] + "..."
+                name_bbox = draw.textbbox((0, 0), recipe_name, font=button_font)
+                name_w = name_bbox[2] - name_bbox[0]
+        draw.text((popup_x + (popup_w - name_w) // 2, text_y + 35), recipe_name, font=button_font, fill=0)
+
+        # Buttons: Nevermind (default) | Delete
+        button_y = popup_y + popup_h - 60
+        button_h = 40
+
+        # Nevermind button (left)
+        nevermind_text = "Nevermind"
+        nevermind_bbox = draw.textbbox((0, 0), nevermind_text, font=button_font)
+        nevermind_w = nevermind_bbox[2] - nevermind_bbox[0] + 30
+        nevermind_x = popup_x + popup_w // 4 - nevermind_w // 2
+
+        if self.delete_confirm_selected == 0:
+            draw.rounded_rectangle([nevermind_x, button_y, nevermind_x + nevermind_w, button_y + button_h],
+                                   radius=10, outline=0, width=3)
+        else:
+            draw.rounded_rectangle([nevermind_x, button_y, nevermind_x + nevermind_w, button_y + button_h],
+                                   radius=10, outline=0, width=1)
+        draw.text((nevermind_x + 15, button_y + 8), nevermind_text, font=button_font, fill=0)
+
+        # Delete button (right)
+        delete_text = "Delete"
+        delete_bbox = draw.textbbox((0, 0), delete_text, font=button_font)
+        delete_w = delete_bbox[2] - delete_bbox[0] + 30
+        delete_x = popup_x + 3 * popup_w // 4 - delete_w // 2
+
+        if self.delete_confirm_selected == 1:
+            draw.rounded_rectangle([delete_x, button_y, delete_x + delete_w, button_y + button_h],
+                                   radius=10, outline=0, width=3)
+        else:
+            draw.rounded_rectangle([delete_x, button_y, delete_x + delete_w, button_y + button_h],
+                                   radius=10, outline=0, width=1)
+        draw.text((delete_x + 15, button_y + 8), delete_text, font=button_font, fill=0)
+
+        self.renderer.framebuffer = img
+
     def render(self):
         """Render based on current state."""
         if self.state == RecipeState.CATEGORIES:
@@ -630,6 +737,8 @@ class RecipeApp:
             self._render_list(self._format_name(self.current_category), self.recipes_in_category)
         elif self.state == RecipeState.RECIPE_VIEW:
             self._render_recipe()
+        elif self.state == RecipeState.DELETE_CONFIRM:
+            self._render_delete_confirm()
 
     def navigate(self, direction: int):
         """Navigate list or scroll recipe."""
@@ -642,7 +751,7 @@ class RecipeApp:
         elif self.state == RecipeState.RECIPE_VIEW:
             # Scroll the recipe content, but at bottom, cycle footer buttons
             max_scroll = max(0, self._content_line_count - self._max_visible_lines)
-            total_footer_buttons = 1 + len(self.recipe_timings)  # Back + timer buttons
+            total_footer_buttons = 2 + len(self.recipe_timings)  # Back + Delete + timer buttons
 
             if direction > 0:  # Scrolling down
                 if self.scroll_offset >= max_scroll:
@@ -664,6 +773,10 @@ class RecipeApp:
                     # At Back button - scroll content up
                     self.scroll_offset = max(0, self.scroll_offset + direction)
             return
+        elif self.state == RecipeState.DELETE_CONFIRM:
+            # Toggle between Nevermind (0) and Delete (1)
+            self.delete_confirm_selected = 1 - self.delete_confirm_selected
+            return
         else:
             return
 
@@ -680,13 +793,14 @@ class RecipeApp:
         elif self.selected_index >= self.scroll_offset + self.max_visible_items:
             self.scroll_offset = self.selected_index - self.max_visible_items + 1
 
-    def select(self) -> bool | Tuple[int, str]:
+    def select(self) -> bool | Tuple[int, str, str]:
         """Select current item.
 
         Returns:
             False: go back to menu
             True: handled internally
-            (seconds, label): timer to create - main.py should add this timer
+            (seconds, label, "add"): timer to create - main.py should add this timer
+            (seconds, label, "remove"): timer to remove - main.py should delete this timer
         """
         # Index 0 is always the back button in list views
         if self.state == RecipeState.CATEGORIES:
@@ -723,20 +837,73 @@ class RecipeApp:
                 # Back button - go back to recipe list
                 self.state = RecipeState.RECIPE_LIST
                 self.scroll_offset = 0
+            elif self.footer_selected == 1:
+                # Delete button - show confirmation popup
+                self.delete_confirm_selected = 0  # Default to "Nevermind"
+                self.state = RecipeState.DELETE_CONFIRM
             else:
-                # Timer button selected - return timer info (if not already added)
-                timer_idx = self.footer_selected - 1
-                if timer_idx < len(self.recipe_timings) and timer_idx not in self.timers_added:
-                    self.timers_added.add(timer_idx)  # Mark as added
+                # Timer button selected - toggle timer (add if not added, remove if added)
+                timer_idx = self.footer_selected - 2  # Offset by 2 (Back + Delete)
+                if timer_idx < len(self.recipe_timings):
                     seconds, label = self.recipe_timings[timer_idx]
                     recipe_name = self._format_name(self.current_recipe.name)
                     timer_label = f"{recipe_name} Timer"
-                    return (seconds, timer_label)
+
+                    if timer_idx in self.timers_added:
+                        # Already added - remove it
+                        self.timers_added.discard(timer_idx)
+                        return (seconds, timer_label, "remove")
+                    else:
+                        # Not added - add it
+                        self.timers_added.add(timer_idx)
+                        return (seconds, timer_label, "add")
+
+        elif self.state == RecipeState.DELETE_CONFIRM:
+            if self.delete_confirm_selected == 0:
+                # Nevermind - go back to recipe view
+                self.state = RecipeState.RECIPE_VIEW
+            else:
+                # Delete confirmed - delete the recipe and return to recipe list
+                self._delete_current_recipe()
+                self.state = RecipeState.RECIPE_LIST
+                self.scroll_offset = 0
+                self.selected_index = 0
 
         return True
 
+    def _delete_current_recipe(self):
+        """Delete the current recipe file."""
+        if self.current_recipe and self.current_category:
+            recipe_name = self.current_recipe.name
+            # Find the actual filename (might have different casing)
+            for filename in self.recipes_in_category:
+                if filename.lower() == recipe_name.lower() or self._format_name(filename).lower() == self._format_name(recipe_name).lower():
+                    filepath = os.path.join(self.recipe_dir, self.current_category, f"{filename}.cook")
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+                        print(f"  [Recipe deleted: {filepath}]")
+                        # Reload the recipes in this category
+                        self._load_recipes(self.current_category)
+                        return
+            # Fallback: try direct path
+            filepath = os.path.join(self.recipe_dir, self.current_category, f"{recipe_name}.cook")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                print(f"  [Recipe deleted: {filepath}]")
+                self._load_recipes(self.current_category)
+
+    def reload_recipes(self):
+        """Reload all categories and recipes. Call when new recipes are added externally."""
+        self._load_categories()
+        if self.current_category:
+            self._load_recipes(self.current_category)
+
     def back(self) -> bool:
         """Go back. Returns False if already at top level."""
+        if self.state == RecipeState.DELETE_CONFIRM:
+            # Cancel delete confirmation
+            self.state = RecipeState.RECIPE_VIEW
+            return True
         if self.state == RecipeState.RECIPE_VIEW:
             self.state = RecipeState.RECIPE_LIST
             self.scroll_offset = 0

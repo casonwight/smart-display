@@ -101,11 +101,31 @@ class TimerApp:
         # Callback for when display needs update
         self.on_update: Optional[Callable] = None
 
+        # Set by main.py before render() when mini player occupies y=430-480
+        self.mini_player_active = False
+
         # Alarm sound path
         self.alarm_sound = os.path.join(ASSETS_DIR, "alarm-noise.mp3")
 
+        # Load timer done icon
+        self.timer_done_icon = self._load_timer_done_icon()
+
         # Register region for timer list (for partial refresh)
         self.renderer.add_region("timer_list", 0, self.LIST_START_Y, DISPLAY_WIDTH, self.LIST_REGION_HEIGHT)
+
+    def _load_timer_done_icon(self):
+        """Load the timer done icon for the alarm screen."""
+        icon_path = os.path.join(ASSETS_DIR, "app-icons", "timer-done-icon.png")
+        if os.path.exists(icon_path):
+            img = Image.open(icon_path)
+            # Crop 15% from edges to remove whitespace, then scale up
+            w, h = img.size
+            margin_x = int(w * 0.15)
+            margin_y = int(h * 0.15)
+            img = img.crop((margin_x, margin_y, w - margin_x, h - margin_y))
+            img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+            return img.convert('L').convert('1')
+        return None
 
     def _tick_loop(self):
         """Background thread to tick timers every second."""
@@ -306,12 +326,13 @@ class TimerApp:
         list_img = self._render_list_area()
         img.paste(list_img, (0, self.LIST_START_Y))
 
-        # Footer
-        draw.line([(0, DISPLAY_HEIGHT - 50), (DISPLAY_WIDTH, DISPLAY_HEIGHT - 50)], fill=0, width=1)
-        hint = "Turn: Navigate   Press: Select   Hold: Home"
-        bbox = draw.textbbox((0, 0), hint, font=small_font)
-        hint_x = (DISPLAY_WIDTH - (bbox[2] - bbox[0])) // 2
-        draw.text((hint_x, DISPLAY_HEIGHT - 38), hint, font=small_font, fill=0)
+        # Footer (hidden when mini player occupies the bottom strip)
+        if not self.mini_player_active:
+            draw.line([(0, DISPLAY_HEIGHT - 50), (DISPLAY_WIDTH, DISPLAY_HEIGHT - 50)], fill=0, width=1)
+            hint = "Turn: Navigate   Press: Select   Hold: Home"
+            bbox = draw.textbbox((0, 0), hint, font=small_font)
+            hint_x = (DISPLAY_WIDTH - (bbox[2] - bbox[0])) // 2
+            draw.text((hint_x, DISPLAY_HEIGHT - 38), hint, font=small_font, fill=0)
 
         self.renderer.framebuffer = img
 
@@ -479,54 +500,68 @@ class TimerApp:
         draw = ImageDraw.Draw(img)
         title_font, time_font, item_font, small_font = self._get_fonts()
 
-        # Big "TIMER!" text
+        # Layout: icon on left, text stacked on right
+        # Draw timer done icon
+        if self.timer_done_icon:
+            icon_x = 30
+            icon_y = (DISPLAY_HEIGHT - self.timer_done_icon.height) // 2 - 20
+            img.paste(self.timer_done_icon, (icon_x, icon_y))
+            text_x_start = icon_x + self.timer_done_icon.width + 30
+        else:
+            text_x_start = 50
+
+        text_area_w = DISPLAY_WIDTH - text_x_start - 20
+
+        # "TIMER!" text - centered in right area
         text = "TIMER!"
         bbox = draw.textbbox((0, 0), text, font=time_font)
         text_width = bbox[2] - bbox[0]
-        draw.text(((DISPLAY_WIDTH - text_width) // 2, 60), text, font=time_font, fill=0)
+        text_x = text_x_start + (text_area_w - text_width) // 2
+        draw.text((text_x, 60), text, font=time_font, fill=0)
 
-        # Timer info
+        # Timer info - below "TIMER!"
         if self.alarming_timer:
-            total_mins = self.alarming_timer.total_seconds // 60
+            total_secs = self.alarming_timer.total_seconds
             if self.alarming_timer.label:
                 info = f"{self.alarming_timer.label}"
+            elif total_secs >= 60:
+                info = f"{total_secs // 60} min timer complete"
             else:
-                info = f"{total_mins} min timer complete"
+                info = f"{total_secs} sec timer complete"
             bbox = draw.textbbox((0, 0), info, font=item_font)
             info_width = bbox[2] - bbox[0]
-            draw.text(((DISPLAY_WIDTH - info_width) // 2, 150), info, font=item_font, fill=0)
+            info_x = text_x_start + (text_area_w - info_width) // 2
+            draw.text((info_x, 140), info, font=item_font, fill=0)
 
-        # Add time display (if any)
+        # Add time display (if any) - in right area
         if self.alarm_add_minutes > 0:
-            # Show "Add X min" in a box
             add_text = f"+ {self.alarm_add_minutes} min"
             add_bbox = draw.textbbox((0, 0), add_text, font=time_font)
             add_width = add_bbox[2] - add_bbox[0]
             add_height = add_bbox[3] - add_bbox[1]
-            box_x = (DISPLAY_WIDTH - add_width) // 2 - 30
-            box_y = 200
+            box_x = text_x_start + (text_area_w - add_width) // 2 - 30
+            box_y = 220
             box_w = add_width + 60
-            box_h = add_height + 40  # Dynamic height based on text
+            box_h = add_height + 40
             draw.rounded_rectangle(
                 [box_x, box_y, box_x + box_w, box_y + box_h],
                 radius=10, outline=0, width=3
             )
-            # Center text vertically in box (account for bbox offset)
             text_y = box_y + (box_h - add_height) // 2 - add_bbox[1]
-            draw.text(((DISPLAY_WIDTH - add_width) // 2, text_y), add_text, font=time_font, fill=0)
+            draw.text((text_x_start + (text_area_w - add_width) // 2, text_y), add_text, font=time_font, fill=0)
             action_text = "Press to start new timer"
         else:
             action_text = "Press to dismiss"
 
-        # Action instruction
+        # Action instruction - centered at bottom
         bbox = draw.textbbox((0, 0), action_text, font=item_font)
         action_width = bbox[2] - bbox[0]
         draw.rounded_rectangle(
-            [(DISPLAY_WIDTH - action_width) // 2 - 20, 320,
-             (DISPLAY_WIDTH + action_width) // 2 + 20, 375],
+            [(DISPLAY_WIDTH - action_width) // 2 - 20, 340,
+             (DISPLAY_WIDTH + action_width) // 2 + 20, 395],
             radius=10, outline=0, width=3
         )
-        draw.text(((DISPLAY_WIDTH - action_width) // 2, 333), action_text, font=item_font, fill=0)
+        draw.text(((DISPLAY_WIDTH - action_width) // 2, 353), action_text, font=item_font, fill=0)
 
         # Footer hint
         draw.line([(0, DISPLAY_HEIGHT - 50), (DISPLAY_WIDTH, DISPLAY_HEIGHT - 50)], fill=0, width=1)

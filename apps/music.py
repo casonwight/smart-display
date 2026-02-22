@@ -35,10 +35,10 @@ THUMB_SIZE = 50
 ROW_HEIGHT = 65
 
 # Max visible items per page in list views
-MAX_VISIBLE_LIST = 5
+MAX_VISIBLE_LIST = 4
 
 # Max visible items in the music menu
-MAX_VISIBLE_MENU = 6
+MAX_VISIBLE_MENU = 5
 
 
 class MusicState(Enum):
@@ -488,15 +488,6 @@ class MusicApp:
                             threading.Thread(
                                 target=self._download_cover,
                                 args=(image_url,), daemon=True).start()
-                        # For non-playlist sources, queue the next tracks so
-                        # playback continues automatically (like a normal queue)
-                        if context is None:
-                            def _queue_next():
-                                for nxt in self._list_items[item_idx + 1: item_idx + 6]:
-                                    nxt_uri = nxt.get("uri", "")
-                                    if nxt_uri:
-                                        self.spotify.add_to_queue(nxt_uri)
-                            threading.Thread(target=_queue_next, daemon=True).start()
                         self.music_state = MusicState.NOW_PLAYING
                     # If play failed, stay on list view (don't switch to blank NOW_PLAYING)
             return True
@@ -551,14 +542,14 @@ class MusicApp:
         if self._scroll_offset > 0:
             draw.text((DISPLAY_WIDTH - 25, 60), "▲", font=self.font_hint, fill=0)
         if self._scroll_offset + MAX_VISIBLE_MENU < len(items):
-            draw.text((DISPLAY_WIDTH - 25, 425), "▼", font=self.font_hint, fill=0)
+            draw.text((DISPLAY_WIDTH - 25, 378), "▼", font=self.font_hint, fill=0)
 
         # Footer
-        draw.line([(0, 435), (DISPLAY_WIDTH, 435)], fill=0, width=1)
-        draw.text((15, 447), "Hold: Home", font=self.font_hint, fill=0)
+        draw.line([(0, 390), (DISPLAY_WIDTH, 390)], fill=0, width=1)
+        draw.text((15, 402), "Hold: Home", font=self.font_hint, fill=0)
         hint = "↕ Navigate  ↵ Select"
         bbox = draw.textbbox((0, 0), hint, font=self.font_hint)
-        draw.text((DISPLAY_WIDTH - (bbox[2] - bbox[0]) - 15, 447), hint, font=self.font_hint, fill=0)
+        draw.text((DISPLAY_WIDTH - (bbox[2] - bbox[0]) - 15, 402), hint, font=self.font_hint, fill=0)
 
     def _render_list(self, draw: ImageDraw.Draw, img: Image.Image):
         """Render a scrollable list view (playlists, tracks, etc.)."""
@@ -662,18 +653,18 @@ class MusicApp:
                 draw.text((DISPLAY_WIDTH - 25, 60), "▲", font=self.font_hint, fill=0)
             total_items = len(self._list_items) + 1
             if self._scroll_offset + MAX_VISIBLE_LIST < total_items:
-                draw.text((DISPLAY_WIDTH - 25, 388), "▼", font=self.font_hint, fill=0)
+                draw.text((DISPLAY_WIDTH - 25, 330), "▼", font=self.font_hint, fill=0)
 
         # Footer
-        draw.line([(0, 395), (DISPLAY_WIDTH, 395)], fill=0, width=1)
-        draw.text((15, 407), "Hold: Home", font=self.font_hint, fill=0)
+        draw.line([(0, 355), (DISPLAY_WIDTH, 355)], fill=0, width=1)
+        draw.text((15, 367), "Hold: Home", font=self.font_hint, fill=0)
         if self.music_state == MusicState.PLAYLISTS:
             action = "↕ Navigate  ↵ Open"
         else:
             action = "↕ Navigate  ↵ Play"
         bbox = draw.textbbox((0, 0), action, font=self.font_hint)
         draw.text(
-            (DISPLAY_WIDTH - (bbox[2] - bbox[0]) - 15, 407),
+            (DISPLAY_WIDTH - (bbox[2] - bbox[0]) - 15, 367),
             action, font=self.font_hint, fill=0)
 
     def _render_now_playing(self, draw: ImageDraw.Draw, img: Image.Image):
