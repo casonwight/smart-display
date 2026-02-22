@@ -29,7 +29,7 @@ from audio.tts import create_tts
 from audio.weather import get_weather, format_weather_speech, format_temperature_speech
 from apps.home import HomeApp
 from apps.menu import MenuApp, MenuItem
-from apps.recipes import RecipeApp
+from apps.recipes import RecipeApp, RecipeState
 from apps.timers import TimerApp, TimerState
 from apps.music import MusicApp, MusicState, STATE_FILE as SPOTIFY_STATE_FILE
 from config import (
@@ -1411,12 +1411,12 @@ class MainController:
         if time.time() < self._full_refresh_cooldown_until:
             return
 
-        if self.state == AppState.MUSIC:
-            # Full progress bar partial refresh on the music screen
+        if self.state == AppState.MUSIC and self.music_app.music_state == MusicState.NOW_PLAYING:
+            # Full progress bar partial refresh on the NOW_PLAYING screen
             with self._lock:
                 self.music_app.update_progress()
-        elif self.state == AppState.MENU and self.music_app.track_name:
-            # Rate-limit mini player refresh on the main menu: every 5 seconds
+        elif self._mini_player_visible() and self.music_app.track_name:
+            # Rate-limit mini player refresh on non-music screens: every 5 seconds
             self._mini_player_tick += 1
             if self._mini_player_tick >= 5:
                 self._mini_player_tick = 0
@@ -1447,6 +1447,18 @@ class MainController:
         self._last_spotify_connected = is_connected
 
     # ==================== Mini Player ====================
+
+    def _mini_player_visible(self) -> bool:
+        """Return True when the mini player strip should be shown."""
+        if not self.music_app.track_name:
+            return False
+        if self.state == AppState.HOME:
+            return False
+        if self.state == AppState.MUSIC and self.music_app.music_state == MusicState.NOW_PLAYING:
+            return False
+        if self.state == AppState.RECIPES and self.recipe_app.state == RecipeState.RECIPE_VIEW:
+            return False
+        return True
 
     def _draw_mini_player(self, img: Image.Image, draw: ImageDraw.Draw):
         """Draw a compact now-playing strip at y=430-480."""
@@ -1554,12 +1566,13 @@ class MainController:
             self.renderer.init()  # Re-init for second full refresh
 
             # Render current screen to framebuffer
+            mini_showing = self._mini_player_visible()
             if self.timer_alarm_active:
                 self.timer_app._render_alarm()
             elif self.state == AppState.HOME:
                 self.home_app.render()
             elif self.state == AppState.MENU:
-                self.menu_app.mini_player_active = bool(self.music_app.track_name)
+                self.menu_app.mini_player_active = mini_showing
                 self.menu_app.render()
             elif self.state == AppState.RECIPES:
                 self.recipe_app.render()
@@ -1567,6 +1580,9 @@ class MainController:
                 self.timer_app.render()
             elif self.state == AppState.MUSIC:
                 self.music_app.render()
+            if mini_showing:
+                draw = ImageDraw.Draw(self.renderer.framebuffer)
+                self._draw_mini_player(self.renderer.framebuffer, draw)
 
             # Display the content
             buf = self.renderer.epd.getbuffer(self.renderer.framebuffer)
@@ -1603,12 +1619,13 @@ class MainController:
                 print("  [Clear refresh]")
 
         # Timer alarm takes priority
+        mini_showing = self._mini_player_visible()
         if self.timer_alarm_active:
             self.timer_app._render_alarm()
         elif self.state == AppState.HOME:
             self.home_app.render()
         elif self.state == AppState.MENU:
-            self.menu_app.mini_player_active = bool(self.music_app.track_name)
+            self.menu_app.mini_player_active = mini_showing
             self.menu_app.render()
         elif self.state == AppState.RECIPES:
             self.recipe_app.render()
@@ -1617,13 +1634,8 @@ class MainController:
         elif self.state == AppState.MUSIC:
             self.music_app.render()
 
-        # Draw mini player on the main menu only (not on recipes/timers/music/home)
-        mini_player_showing = (
-            self.state == AppState.MENU
-            and bool(self.music_app.track_name)
-            and self._voice_overlay_state == VoiceOverlayState.IDLE
-        )
-        if mini_player_showing:
+        # Draw mini player over the bottom strip on all applicable screens
+        if mini_showing and self._voice_overlay_state == VoiceOverlayState.IDLE:
             draw = ImageDraw.Draw(self.renderer.framebuffer)
             self._draw_mini_player(self.renderer.framebuffer, draw)
 

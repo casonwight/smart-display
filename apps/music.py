@@ -361,8 +361,10 @@ class MusicApp:
         if self.music_state == MusicState.NOW_PLAYING:
             if self.spotify and self.spotify.available:
                 if direction > 0:
+                    # next_track works if there are queued tracks
                     self.spotify.next_track()
-                else:
+                elif self._current_playlist_uri:
+                    # previous_track only works within a playlist/album context
                     self.spotify.previous_track()
 
         elif self.music_state == MusicState.MENU:

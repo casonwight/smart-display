@@ -208,10 +208,12 @@ class MenuApp:
         pill_h = content_h + padding_y * 2
         pill_radius = pill_h // 2
 
-        # Position pill at bottom-left
-        margin = 30
-        pill_x = margin
-        pill_y = DISPLAY_HEIGHT - margin - pill_h
+        # Position pill at bottom-left; move up when mini player occupies y=430-480
+        pill_x = 30
+        if self.mini_player_active:
+            pill_y = 425 - pill_h  # Sit just above mini player
+        else:
+            pill_y = DISPLAY_HEIGHT - 30 - pill_h
 
         # Draw pill background
         draw.rounded_rectangle(
@@ -289,9 +291,8 @@ class MenuApp:
         menu_img = self._render_menu_area()
         img.paste(menu_img, (self.start_x, self.menu_y))
 
-        # Render time pill at bottom only when mini player isn't occupying that space
-        if not self.mini_player_active:
-            self._render_time_pill(draw)
+        # Render time pill (repositions above mini player when mini_player_active)
+        self._render_time_pill(draw)
 
         self.renderer.framebuffer = img
 
