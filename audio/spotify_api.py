@@ -148,12 +148,12 @@ class SpotifyController:
             return self.resume()
 
     def next_track(self) -> bool:
-        device_id = self._get_device_id()
-        return self._call(self._sp.next_track, device_id=device_id)
+        # No device_id: let Spotify route to the active/playing device.
+        # Passing a cached device_id causes "Device not found" if raspotify restarted.
+        return self._call(self._sp.next_track)
 
     def previous_track(self) -> bool:
-        device_id = self._get_device_id()
-        return self._call(self._sp.previous_track, device_id=device_id)
+        return self._call(self._sp.previous_track)
 
     def play_search(self, query: str) -> Optional[str]:
         """Search for a track and start playing it. Returns track name or None on failure."""

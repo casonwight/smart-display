@@ -439,13 +439,19 @@ class MusicApp:
             item_idx = self._selected_index - 1
             if item_idx < len(self._list_items):
                 playlist = self._list_items[item_idx]
-                self._current_playlist_id = playlist.get("id", "")
-                self._current_playlist_uri = playlist.get("uri", "")
-                self.music_state = MusicState.PLAYLIST_TRACKS
-                self._list_title = playlist.get("name", "Playlist")
-                self._back_state = MusicState.PLAYLISTS
-                self._load_async(
-                    self.spotify.get_playlist_tracks, self._current_playlist_id)
+                uri = playlist.get("uri", "")
+                if uri and self.spotify and self.spotify.available:
+                    # Spotify's API restricts /playlists/{id}/tracks (requires Extended Access).
+                    # Instead, play the whole playlist and let Spotify pick up from there.
+                    self._current_playlist_uri = uri
+                    self._current_playlist_id = playlist.get("id", "")
+                    played = self.spotify.play_playlist(uri)
+                    if played:
+                        # Placeholder track info until librespot fires the state update
+                        self.track_name = playlist.get("name", "")
+                        self.artist_name = ""
+                        self.is_playing = True
+                        self.music_state = MusicState.NOW_PLAYING
             return True
 
         else:
@@ -467,11 +473,8 @@ class MusicApp:
                 track = self._list_items[item_idx]
                 uri = track.get("uri", "")
                 if uri and self.spotify and self.spotify.available:
-                    context = (
-                        self._current_playlist_uri
-                        if self.music_state == MusicState.PLAYLIST_TRACKS
-                        else None
-                    )
+                    # No playlist context for RECENT/LIKED/QUEUE individual track plays
+                    context = None
                     played = self.spotify.play_track(uri, context)
                     if played:
                         # Pre-populate from list item immediately so NOW_PLAYING
@@ -538,11 +541,9 @@ class MusicApp:
                         [(0, item_y + ITEM_HEIGHT - 2), (DISPLAY_WIDTH, item_y + ITEM_HEIGHT - 2)],
                         fill=0, width=1)
 
-        # Scroll arrows
+        # Up scroll arrow above first item
         if self._scroll_offset > 0:
             draw.text((DISPLAY_WIDTH - 25, 60), "▲", font=self.font_hint, fill=0)
-        if self._scroll_offset + MAX_VISIBLE_MENU < len(items):
-            draw.text((DISPLAY_WIDTH - 25, 378), "▼", font=self.font_hint, fill=0)
 
         # Footer
         draw.line([(0, 390), (DISPLAY_WIDTH, 390)], fill=0, width=1)
@@ -550,6 +551,10 @@ class MusicApp:
         hint = "↕ Navigate  ↵ Select"
         bbox = draw.textbbox((0, 0), hint, font=self.font_hint)
         draw.text((DISPLAY_WIDTH - (bbox[2] - bbox[0]) - 15, 402), hint, font=self.font_hint, fill=0)
+        # Down arrow in center of footer (clear of left/right text)
+        if self._scroll_offset + MAX_VISIBLE_MENU < len(items):
+            vbbox = draw.textbbox((0, 0), "▼", font=self.font_hint)
+            draw.text(((DISPLAY_WIDTH - (vbbox[2] - vbbox[0])) // 2, 402), "▼", font=self.font_hint, fill=0)
 
     def _render_list(self, draw: ImageDraw.Draw, img: Image.Image):
         """Render a scrollable list view (playlists, tracks, etc.)."""
@@ -658,10 +663,7 @@ class MusicApp:
         # Footer
         draw.line([(0, 355), (DISPLAY_WIDTH, 355)], fill=0, width=1)
         draw.text((15, 367), "Hold: Home", font=self.font_hint, fill=0)
-        if self.music_state == MusicState.PLAYLISTS:
-            action = "↕ Navigate  ↵ Open"
-        else:
-            action = "↕ Navigate  ↵ Play"
+        action = "↕ Navigate  ↵ Play"
         bbox = draw.textbbox((0, 0), action, font=self.font_hint)
         draw.text(
             (DISPLAY_WIDTH - (bbox[2] - bbox[0]) - 15, 367),
