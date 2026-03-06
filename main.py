@@ -147,6 +147,7 @@ class MainController:
         self._pending_update = threading.Event()
         self._debounce_timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
+        self._last_encoder_press_time = 0.0  # For rotation bounce suppression
 
         # Set up callbacks
         self.timer_app.on_update = self._on_timer_update
@@ -223,6 +224,11 @@ class MainController:
 
     def _on_rotate(self, direction: int):
         """Handle encoder rotation."""
+        # Suppress mechanical bounce from encoder button press/release
+        # (pressing the shaft often generates spurious rotation pulses)
+        if time.time() - self._last_encoder_press_time < 0.4:
+            return
+
         self._record_activity()
 
         # During timer alarm, rotation adjusts add-time
@@ -252,12 +258,14 @@ class MainController:
     def _on_encoder_press(self):
         """Handle encoder button press start."""
         self._encoder_held = False
+        self._last_encoder_press_time = time.time()
 
     def _on_encoder_release(self):
         """Handle encoder button release (short press)."""
         if self._encoder_held:
             return  # Was a hold, not a press
 
+        self._last_encoder_press_time = time.time()  # Reset on release for post-release bounce
         self._record_activity()
 
         # Stop TTS if currently talking
@@ -334,18 +342,32 @@ class MainController:
             self._schedule_update()
 
     def _on_volume_up(self):
-        """Handle volume up button."""
+        """Handle volume up button. If both buttons pressed simultaneously, toggle play/pause."""
+        if self.button_down.is_pressed:
+            self._on_both_volume_buttons()
+            return
         self._record_activity()
         new_volume = self.audio.volume_up()
         self.tts.volume = new_volume
         self._show_volume_overlay(new_volume)
 
     def _on_volume_down(self):
-        """Handle volume down button."""
+        """Handle volume down button. If both buttons pressed simultaneously, toggle play/pause."""
+        if self.button_up.is_pressed:
+            self._on_both_volume_buttons()
+            return
         self._record_activity()
         new_volume = self.audio.volume_down()
         self.tts.volume = new_volume
         self._show_volume_overlay(new_volume)
+
+    def _on_both_volume_buttons(self):
+        """Handle simultaneous volume button press — toggle Spotify play/pause."""
+        self._record_activity()
+        if self.spotify and self.spotify.available:
+            is_playing = self.music_app.is_playing
+            print(f"[Main] Both volume buttons → toggle play/pause (currently {'playing' if is_playing else 'paused'})")
+            self.spotify.toggle_play_pause(is_playing)
 
     def _create_timer_from_recipe(self, seconds: int, label: str):
         """Create a timer from a recipe timer button."""
@@ -1070,6 +1092,9 @@ class MainController:
 
         # Reset music timeout and entry state when entering music app
         if new_state == AppState.MUSIC:
+            # Sync _last_known_track so _on_music_update() doesn't see a "new track"
+            # on entry and snap to NOW_PLAYING via on_new_track()
+            self._last_known_track = self.music_app.track_name
             self.music_app.reset_to_entry_state()
             self.last_music_playing_time = time.time()
 

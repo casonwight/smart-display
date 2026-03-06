@@ -40,6 +40,12 @@ class SpotifyController:
         self._device_id: Optional[str] = None
         self._device_cache_time: float = 0
         self._lock = threading.Lock()
+        # Skip queue: aggregates rapid encoder rotations into a single worker thread
+        self._pending_skips: int = 0   # +N = skip next N, -N = skip previous N
+        self._skip_queue_lock = threading.Lock()
+        self._skip_worker_running = False
+        # Called after skips are successfully applied (used by MusicApp to poll for new track)
+        self.on_skip_success = None
         self._init()
 
     def _init(self):
@@ -97,23 +103,29 @@ class SpotifyController:
         try:
             devices = self._sp.devices()
             device_list = devices.get("devices", [])
+            names = [(d.get("name", "?"), d.get("is_active", False)) for d in device_list]
+            print(f"[Spotify] Device lookup: {names}")
             # Prefer raspotify by name
             for device in device_list:
                 if RASPOTIFY_DEVICE_NAME in device.get("name", ""):
                     self._device_id = device["id"]
                     self._device_cache_time = now
+                    print(f"[Spotify] Using '{device.get('name')}' id={self._device_id[:8]}…")
                     return self._device_id
             # Fall back to any active device
             for device in device_list:
                 if device.get("is_active"):
                     self._device_id = device["id"]
                     self._device_cache_time = now
+                    print(f"[Spotify] Using active device '{device.get('name')}' id={self._device_id[:8]}…")
                     return self._device_id
             # Fall back to first device
             if device_list:
                 self._device_id = device_list[0]["id"]
                 self._device_cache_time = now
+                print(f"[Spotify] Using first device '{device_list[0].get('name')}' id={self._device_id[:8]}…")
                 return self._device_id
+            print("[Spotify] No devices found in device list")
         except Exception as e:
             print(f"[Spotify] Device lookup failed: {e}")
         return None
@@ -148,12 +160,85 @@ class SpotifyController:
             return self.resume()
 
     def next_track(self) -> bool:
-        # No device_id: let Spotify route to the active/playing device.
-        # Passing a cached device_id causes "Device not found" if raspotify restarted.
-        return self._call(self._sp.next_track)
+        self.queue_skip("next")
+        return True
 
     def previous_track(self) -> bool:
-        return self._call(self._sp.previous_track)
+        self.queue_skip("previous")
+        return True
+
+    def queue_skip(self, direction: str) -> None:
+        """Queue a skip command (non-blocking). Multiple rapid rotations are
+        aggregated so only the net count of skips fires when the device is ready."""
+        if not self.available:
+            return
+        delta = 1 if direction == "next" else -1
+        with self._skip_queue_lock:
+            self._pending_skips += delta
+            if not self._skip_worker_running:
+                self._skip_worker_running = True
+                threading.Thread(target=self._skip_worker, daemon=True).start()
+
+    def _skip_worker(self):
+        """Background worker: apply all pending skips, retrying at 1s intervals
+        until the device re-registers after a play command."""
+        for attempt in range(15):
+            if attempt > 0:
+                time.sleep(1.0)
+
+            # Early exit if nothing left to do
+            with self._skip_queue_lock:
+                if self._pending_skips == 0:
+                    break
+
+            # Fresh device lookup on every attempt
+            self._device_id = None
+            device_id = self._get_device_id()
+            if device_id is None:
+                print(f"[Spotify] Skip: no device (attempt {attempt + 1}/15)…")
+                continue
+
+            # Device found — drain all pending skip batches without further delay
+            total_applied = 0  # Net skips applied (positive=next, negative=previous)
+            while True:
+                with self._skip_queue_lock:
+                    pending = self._pending_skips
+                    self._pending_skips = 0
+                if pending == 0:
+                    break
+
+                fn = self._sp.next_track if pending > 0 else self._sp.previous_track
+                label = "next" if pending > 0 else "previous"
+                count = abs(pending)
+                for i in range(count):
+                    try:
+                        with self._lock:
+                            fn(device_id=device_id)
+                        print(f"[Spotify] Skip {label} OK ({i + 1}/{count})")
+                        total_applied += 1 if pending > 0 else -1
+                    except Exception as e:
+                        err = str(e)
+                        if "Restriction violated" in err:
+                            print(f"[Spotify] Skip {label} restricted: {err}")
+                        else:
+                            print(f"[Spotify] Skip {label} {i + 1}/{count} failed: {e}")
+                            self._device_id = None
+                        break
+            # Notify music app: pass count and direction so it can use prefetch or poll
+            if self.on_skip_success and total_applied != 0:
+                direction = "next" if total_applied > 0 else "previous"
+                self.on_skip_success(abs(total_applied), direction)
+            break  # Done — exit retry loop
+
+        else:
+            print("[Spotify] Skip: all 15 retries exhausted, command dropped")
+
+        with self._skip_queue_lock:
+            self._skip_worker_running = False
+            # Restart if more skips arrived after we drained the queue
+            if self._pending_skips != 0:
+                self._skip_worker_running = True
+                threading.Thread(target=self._skip_worker, daemon=True).start()
 
     def play_search(self, query: str) -> Optional[str]:
         """Search for a track and start playing it. Returns track name or None on failure."""
@@ -223,6 +308,7 @@ class SpotifyController:
                     "uri": track["uri"],
                     "name": track["name"],
                     "artist": artists[0]["name"] if artists else "",
+                    "artist_id": artists[0]["id"] if artists else "",
                     "duration_ms": track.get("duration_ms", 0),
                     "image_url": images[0]["url"] if images else "",
                 })
@@ -255,6 +341,7 @@ class SpotifyController:
                     "uri": uri,
                     "name": track["name"],
                     "artist": artists[0]["name"] if artists else "",
+                    "artist_id": artists[0]["id"] if artists else "",
                     "duration_ms": track.get("duration_ms", 0),
                     "image_url": images[0]["url"] if images else "",
                 })
@@ -282,6 +369,7 @@ class SpotifyController:
                     "uri": track["uri"],
                     "name": track["name"],
                     "artist": artists[0]["name"] if artists else "",
+                    "artist_id": artists[0]["id"] if artists else "",
                     "duration_ms": track.get("duration_ms", 0),
                     "image_url": images[0]["url"] if images else "",
                 })
@@ -308,6 +396,7 @@ class SpotifyController:
                     "uri": current["uri"],
                     "name": current["name"],
                     "artist": artists[0]["name"] if artists else "",
+                    "artist_id": artists[0]["id"] if artists else "",
                     "duration_ms": current.get("duration_ms", 0),
                     "image_url": images[0]["url"] if images else "",
                     "is_current": True,
@@ -322,6 +411,7 @@ class SpotifyController:
                     "uri": item["uri"],
                     "name": item["name"],
                     "artist": artists[0]["name"] if artists else "",
+                    "artist_id": artists[0]["id"] if artists else "",
                     "duration_ms": item.get("duration_ms", 0),
                     "image_url": images[0]["url"] if images else "",
                 })
@@ -330,22 +420,201 @@ class SpotifyController:
             print(f"[Spotify] get_queue failed: {e}")
             return []
 
+    def get_next_track(self) -> Optional[dict]:
+        """Return the first track in the playback queue (not currently playing)."""
+        if not self.available:
+            return None
+        try:
+            with self._lock:
+                results = self._sp.queue()
+            queue = results.get("queue", [])
+            if not queue:
+                return None
+            item = queue[0]
+            if not item:
+                return None
+            artists = item.get("artists", [])
+            album = item.get("album", {})
+            images = album.get("images", [])
+            return {
+                "uri": item["uri"],
+                "name": item["name"],
+                "artist": artists[0]["name"] if artists else "",
+                "artist_id": artists[0]["id"] if artists else "",
+                "album": album.get("name", ""),
+                "duration_ms": item.get("duration_ms", 0),
+                "image_url": images[0]["url"] if images else "",
+            }
+        except Exception as e:
+            print(f"[Spotify] get_next_track failed: {e}")
+            return None
+
     def play_track(self, uri: str, context_uri: str = None) -> bool:
         """Play a specific track, optionally within a playlist context."""
         device_id = self._get_device_id()
         if context_uri:
-            return self._call(
+            ok = self._call(
                 self._sp.start_playback,
                 device_id=device_id,
                 context_uri=context_uri,
                 offset={"uri": uri},
             )
-        return self._call(self._sp.start_playback, device_id=device_id, uris=[uri])
+        else:
+            ok = self._call(self._sp.start_playback, device_id=device_id, uris=[uri])
+        if ok:
+            # Device re-registers after play — invalidate cache so next command does fresh lookup
+            self._device_id = None
+        return ok
 
     def play_playlist(self, context_uri: str) -> bool:
         """Start playing a playlist from the beginning."""
         device_id = self._get_device_id()
-        return self._call(self._sp.start_playback, device_id=device_id, context_uri=context_uri)
+        print(f"[Spotify] play_playlist device_id={device_id[:8] + '…' if device_id else None}")
+        if device_id is None:
+            print("[Spotify] play_playlist: no device available — is Kitchen Display connected to Spotify?")
+            return False
+        ok = self._call(self._sp.start_playback, device_id=device_id, context_uri=context_uri)
+        if ok:
+            # Device re-registers after play — invalidate cache so next command does fresh lookup
+            self._device_id = None
+        return ok
+
+    def get_current_track(self) -> Optional[dict]:
+        """Poll Spotify API for currently playing track. Fallback when librespot onevent is silent."""
+        if not self.available:
+            return None
+        try:
+            with self._lock:
+                playback = self._sp.current_playback()
+            if not playback:
+                return None
+            item = playback.get("item")
+            if not item:
+                return None
+            artists = item.get("artists", [])
+            album = item.get("album", {})
+            images = album.get("images", [])
+            return {
+                "name": item.get("name", ""),
+                "id": item.get("id", ""),
+                "uri": item.get("uri", ""),
+                "artist": artists[0]["name"] if artists else "",
+                "artist_id": artists[0]["id"] if artists else "",
+                "album": album.get("name", ""),
+                "duration_ms": item.get("duration_ms", 0),
+                "position_ms": playback.get("progress_ms", 0),
+                "is_playing": playback.get("is_playing", False),
+                "image_url": images[0]["url"] if images else "",
+                "context": playback.get("context"),
+            }
+        except Exception as e:
+            print(f"[Spotify] get_current_track failed: {e}")
+            return None
+
+    def get_related_tracks(self, track_id: str, artist_id: str,
+                           limit: int = 20, artist_name: str = "") -> List[dict]:
+        """Get radio-like tracks related to a given track/artist.
+
+        Tries three strategies in order:
+          1. sp.recommendations()         — removed by Spotify Nov 2024, fails gracefully
+          2. artist top-tracks endpoint   — works when account/market allows it
+          3. search by artist name        — always available, reliable fallback
+        """
+        if not self.available:
+            return []
+
+        def _parse_tracks(items, max_count=limit):
+            out = []
+            for item in items[:max_count]:
+                if not item:
+                    continue
+                artists = item.get("artists", [])
+                album = item.get("album", {})
+                images = album.get("images", [])
+                out.append({
+                    "uri": item["uri"],
+                    "name": item["name"],
+                    "id": item.get("id", ""),
+                    "artist": artists[0]["name"] if artists else "",
+                    "artist_id": artists[0]["id"] if artists else "",
+                    "duration_ms": item.get("duration_ms", 0),
+                    "image_url": images[0]["url"] if images else "",
+                })
+            return out
+
+        # 1. Recommendations (removed by Spotify Nov 2024)
+        try:
+            with self._lock:
+                results = self._sp.recommendations(seed_tracks=[track_id], limit=limit)
+            tracks = _parse_tracks(results.get("tracks", []))
+            if tracks:
+                print(f"[Spotify] Recommendations: got {len(tracks)} tracks")
+                return tracks
+        except Exception as e:
+            print(f"[Spotify] recommendations unavailable, trying artist top tracks…")
+
+        # 2. Artist top tracks (spotipy sends ?country=US which may 403; try both market values)
+        if artist_id:
+            trid = self._sp._get_id("artist", artist_id)
+            for market in ("from_token", "US"):
+                try:
+                    with self._lock:
+                        results = self._sp._get(f"artists/{trid}/top-tracks", market=market)
+                    tracks = _parse_tracks(results.get("tracks", []))
+                    if tracks:
+                        print(f"[Spotify] Artist top tracks (market={market}): got {len(tracks)} tracks")
+                        return tracks
+                except Exception:
+                    pass
+            print(f"[Spotify] artist_top_tracks failed for all markets, trying search…")
+
+        # 3. Search by artist name — always available
+        name = artist_name or ""
+        if not name and artist_id:
+            # Try to resolve artist name from the API (best effort)
+            try:
+                with self._lock:
+                    info = self._sp.artist(artist_id)
+                name = info.get("name", "")
+            except Exception:
+                pass
+        if name:
+            # Use _get() directly to avoid spotipy passing market=None as a query param
+            # Spotify caps search limit at 10 in development/quota-restricted apps
+            search_limit = min(limit, 10)
+            for q in (f"artist:{name}", name):
+                try:
+                    with self._lock:
+                        results = self._sp._get("search", q=q, type="track",
+                                                limit=search_limit, offset=0)
+                    items = results.get("tracks", {}).get("items", [])
+                    tracks = _parse_tracks(items)
+                    if tracks:
+                        print(f"[Spotify] Search fallback (q={q!r}): got {len(tracks)} tracks")
+                        return tracks
+                except Exception as e:
+                    print(f"[Spotify] search (q={q!r}) failed: {e}")
+
+        print(f"[Spotify] get_related_tracks: all strategies exhausted, no tracks found")
+        return []
+
+    def start_radio(self, track_id: str, artist_id: str = "", artist_name: str = "") -> bool:
+        """Queue related tracks as a radio for the given track/artist."""
+        print(f"[Spotify] start_radio: seed={track_id[:8]}…  artist={artist_name or artist_id[:8] if artist_id else '?'}…")
+        tracks = self.get_related_tracks(track_id, artist_id, artist_name=artist_name)
+        if not tracks:
+            print("[Spotify] start_radio: no tracks to queue")
+            return False
+        queued = 0
+        for track in tracks:
+            uri = track.get("uri", "")
+            if uri and self.add_to_queue(uri):
+                queued += 1
+            else:
+                break
+        names = [t.get("name", "?") for t in tracks[:3]]
+        print(f"[Spotify] start_radio: queued {queued}/{len(tracks)} tracks — {names}")
+        return queued > 0
 
     def add_to_queue(self, uri: str) -> bool:
         """Add a track URI to the playback queue."""

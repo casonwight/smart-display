@@ -4,3 +4,5 @@ spidev>=3.6
 spotipy>=2.23.0
 vosk>=0.3.45
 faster-whisper>=0.10.0
+flask>=3.0.0
+recipe-scrapers>=15.0.0

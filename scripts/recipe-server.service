@@ -1,0 +1,31 @@
+# Recipe Import Server systemd service
+#
+# Installation:
+#   sudo cp recipe-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable recipe-server
+#   sudo systemctl start recipe-server
+#
+# Check status:
+#   sudo systemctl status recipe-server
+#
+# View logs:
+#   journalctl -u recipe-server -f
+
+[Unit]
+Description=Recipe Import Webhook Server
+After=network.target
+
+[Service]
+Type=simple
+User=casonwight
+WorkingDirectory=/home/casonwight/repos/smart-display/scripts
+ExecStart=/usr/bin/python3 /home/casonwight/repos/smart-display/scripts/recipe_server.py
+Restart=always
+RestartSec=10
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

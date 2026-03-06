@@ -84,7 +84,7 @@ Modified `/boot/firmware/config.txt`:
 
 | Component | Wire | Old Pin | New Pin | Reason |
 |-----------|------|---------|---------|--------|
-| Amp GAIN (both) | Blue | Pin 14 (GND) | Pin 17 (3V3) | Reduce amp gain from 15dB to 9dB |
+| Amp GAIN (both) | Blue | Pin 14 (GND) | Pin 14 (GND) | No change — GAIN stays at GND = 9 dB |
 
 ---
 

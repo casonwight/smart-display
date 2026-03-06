@@ -20,19 +20,19 @@ python main.py
 **Key files to know:**
 - `main.py` - Main application loop, state machine, voice command handlers
 - `audio/voice.py` - Wake word detection, STT, intent parsing
-- `audio/tts.py` - Kokoro text-to-speech
+- `audio/tts.py` - Piper text-to-speech
 - `audio/weather.py` - Weather API integration
 - `config.py` - All configuration constants
 
-**What works:** Everything! Wake word, voice commands, TTS responses, timers, recipes, weather, navigation
+**What works:** Everything! Wake word, voice commands, TTS responses (hfc_female voice), voice status icons, stop-talking, timers, recipes, weather, navigation
 
-**What's broken:** Spotify play/pause/skip (Spotify API blocked for new integrations)
+**What's broken:** Nothing known - Spotify controls work if credentials are configured (see setup below)
 
 **What's next:** See "Next Steps" section below
 
 ---
 
-## Current Status: Voice control working! (2026-02-04)
+## Current Status: Spotify API controls implemented (2026-02-21)
 
 ## Completed
 - [x] Hardware testing (all components working)
@@ -47,26 +47,161 @@ python main.py
 - [x] Music/Spotify app - Now Playing UI, reads from librespot onevent state file
 - [x] Main app loop - state machine, back buttons, volume overlay, timer interrupts, auto-timeouts
 - [x] Voice control - wake word + command recognition + TTS responses
+- [x] Voice status icons - listening, thinking, talking overlays on e-ink display
+- [x] Spotify Web API controls - pause/play/skip via encoder + voice commands
 
 ## In Progress
-- [ ] Final integration testing of voice commands
+- [ ] Add more otter icons throughout the app (see icon opportunities below)
+- [ ] As part of the above, "confused-icon.png" was added to app icons, but not implemented. It should be shown when the voice command is unintelligible.
 
 ## Pending
-- [ ] Spotify API integration (blocked - Spotify paused new integrations)
-- [ ] Update this and other documents to note the switch from Kokoro to piper (look up code, remove/replace kokoro references and files, clean things up)
-- [ ] Bigger icons for all 3 apps (recipes, timers, music), but even more cropping for the latter 2 as well (after checking that the crop does not cut off non-white portions of the 2 images)
-- [ ] Display formatting issues for recipes (parentheses after text should have space, e.g. "butter(melted)" -> "butter (melted)" and fix problems like "@?sugar" in the molasses cookies recipe, and still adhere to cooklang documentation)
-- [ ] When a timer is selected from a recipe, the buttons turns dark and the recipe is added. This might be a mistaken push, so I want it so that if the user clicks again, it "unclicks it" (resets to normal white button and the timer is deleted)
-- [ ] The left scroll arrow next to the bacl button and timers on a recipe page is too close. That left arrow indicating scrolling is overlapping a little bit
-- [ ] The progress bar on music can be updated every second (partial refresh of the eink display). So can the "time in song" number. This should be done only as a partial refresh on the screen
-- [ ] The "Down arrow" for scrolling on the recipes menu pages (both recipe types and the lists of recipes) is too close to the horizontal bar at the bottom
+- [ ] Spotify API credentials setup (run `python scripts/spotify_auth.py` after adding credentials to config.py)
+
+## Session Notes (2026-02-21) - Spotify API Controls
+
+### Spotify Web API Integration
+- **Spotify API unblocked** - New app registrations re-enabled by Spotify
+- **`audio/spotify_api.py`** - New `SpotifyController` class using `spotipy`
+  - Reads credentials from `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` env vars (or config.py)
+  - Uses cached OAuth token only at startup (non-blocking) - token cached at `~/.cache/spotipy-smart-display`
+  - Methods: `pause()`, `resume()`, `toggle_play_pause()`, `next_track()`, `previous_track()`, `play_search()`
+  - Device auto-detection: prefers "Kitchen Display" (raspotify), falls back to any active/available device
+  - Fails gracefully if not configured (all methods return False/None)
+- **`scripts/spotify_auth.py`** - One-time interactive OAuth setup script
+  - Prints auth URL, user visits on any device, pastes redirect URL back
+  - Token cached for future sessions (spotipy handles refresh automatically)
+- **`config.py`** - Added `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`, `SPOTIFY_CACHE_PATH`
+- **`apps/music.py`** - Encoder controls now wired to Spotify API
+  - Encoder press: `toggle_play_pause()` (stays in music app)
+  - Encoder rotate left/right: `previous_track()` / `next_track()`
+  - Hint updated: "Rotate: Skip | Press: Pause/Play" when API available
+- **`main.py`** - Voice commands now functional
+  - "Hey Ollie, pause / stop the music" → `pause()` or `resume()` based on current state
+  - "Hey Ollie, skip" / "next song" → `next_track()`
+  - "Hey Ollie, play [song/artist]" → `play_search(query)` with TTS confirmation
+  - "Hey Ollie, play" (no query) → `resume()`
+
+### Spotify Setup Steps
+1. Create app at https://developer.spotify.com/dashboard
+2. Add `http://localhost:8888/callback` as Redirect URI in app settings
+3. Set credentials: `export SPOTIFY_CLIENT_ID=xxx SPOTIFY_CLIENT_SECRET=yyy` (or edit config.py)
+4. Run: `python scripts/spotify_auth.py` — visit URL on phone, paste redirect back
+5. Done! Token auto-refreshes via spotipy cache
+
+### Voice Commands Now Working
+| Command | Example | Result |
+|---------|---------|--------|
+| spotify_play (with query) | "play Shape of You" | Searches + plays, TTS confirms |
+| spotify_play (no query) | "play" | Resumes playback |
+| spotify_pause | "pause the music" / "stop" | Pause or resume based on state |
+| spotify_skip | "skip" / "next song" | Skip to next track |
+
+---
+
+## Session Notes (2026-02-09) - Voice Status Icons, TTS Voice, Speaker Upgrade
+
+### Speaker Upgrade
+- **Installed Facmogu 3" 88dB speakers** - replacing the old Gikfun 2" 77dB speakers
+- Drop-in replacement, same impedance and form factor, much louder
+
+### TTS Voice Change
+- **Switched from `en_US-lessac-medium` to `en_US-hfc_female-medium`** - lighter, friendlier female voice
+- Benchmarked on Pi 5: hfc_female ~1.33s avg vs lessac ~1.46s avg (slightly faster)
+- Only medium quality available for hfc_female (no high variant on HuggingFace)
+- Model already downloaded to `models/piper/`
+
+### Voice Status Icons
+- **Added 4 otter voice status icons** to `assets/app-icons/`:
+  - `listening-icon.png` - shown when wake word detected, device listening for command
+  - `thinking-icon.png` - shown when processing audio (transcribing, parsing intent)
+  - `talking-open-icon.png` - mouth open frame for talking animation
+  - `talking-closed-icon.png` - mouth closed frame for talking animation
+- **Icon overlay system** - white rounded-rect popup centered on screen
+  - Icons cropped 15% from all sides (remove whitespace border), thumbnailed to 300px
+  - 10px padding in box, ~320x320 overlay centered on 800x480 display
+- **Talking animation** - natural mouth movement pattern:
+  - Mouth mostly closed with short open bursts (150-250ms open, 400-700ms closed)
+  - Randomized timing to avoid mechanical look
+- **Status callback architecture**:
+  - `VoiceController` gets `on_status_callback` → fires "listening", "thinking", "command_done", "idle"
+  - `PiperTTS` gets `on_speaking_changed` → fires True/False for talking state
+  - `MainController` draws overlay immediately from background threads using `_lock`
+- **Graceful cleanup** - if voice command doesn't trigger TTS, overlay clears after 500ms grace period
+
+### Stop Talking (Encoder Press)
+- **Added `stop()` method to PiperTTS** - kills piper/aplay subprocesses immediately
+- **Encoder press during TALKING state** stops TTS instantly
+- Existing `finally` block handles cleanup: sets `_speaking=False`, fires `on_speaking_changed(False)`, overlay clears
+
+### Bug Fixes
+- **Recording cutoff fix** - listening icon display was blocking the voice thread, causing first words to be missed
+  - Moved `on_status("listening")` to before the beep
+  - Made listening icon display non-blocking (background thread)
+  - Recording now starts immediately after beep with no gap
+- **Overlay disappearing during talking** - two root causes found and fixed:
+  1. Clear-first white refresh was blanking the overlay mid-talk → deferred clear-first while voice overlay is active
+  2. Home screen time update and music progress update were doing direct partial refreshes that bypassed `_render_internal()` → skipped during voice overlay
+- **Overlay flash on dismiss removed** - no longer does clear-first when overlay goes to IDLE (avoids full screen flash)
+
+### Files Modified
+- `main.py` - VoiceOverlayState enum, icon loading/cropping, overlay drawing, status/TTS callbacks, talking animation, stop-on-press, deferred clear-first, skip direct refreshes during overlay
+- `audio/voice.py` - Added `on_status_callback` parameter, status calls at key flow points, non-blocking listening icon
+- `audio/tts.py` - Added `on_speaking_changed` callback, `stop()` method, switched to hfc_female voice
+- Moved icons from `assets/` to `assets/app-icons/`
+
+---
+
+## Session Notes (2026-02-05) - Voice Robustness & Otter Theme
+
+### Voice Command Improvements
+- **Added "refresh screen" voice command** - Does deep refresh to clear e-ink ghosting
+  - On home screen: reloads wallpaper + clear-first refresh
+  - On other screens: white full refresh + content full refresh
+- **Extensive misheard variants added to ALL voice commands**
+  - "timer" → timer, time or, time her, tamer, timor, tie more, dimer, time are, tie mer
+  - "pause" → pause, paws, paused, pos, pours, cause, pas, poss, pawns
+  - "home" → home, hone, ohm, comb, dome, foam, roam, holm
+  - "menu" → menu, men you, venue, ben you, many you, manu
+  - "refresh" → refresh, we fresh, we flash, we slash, please fresh, read flash, etc.
+  - See `audio/voice.py` IntentParser.PATTERNS for full list
+- **Trailing punctuation stripped globally** - Whisper sometimes adds periods
+- **"Current recipe" context improved** - Only valid when:
+  1. Actually viewing a recipe (RecipeState.RECIPE_VIEW), OR
+  2. Exactly one active timer with a recipe label
+
+### Music App Fixes
+- **Progress bar now updates every second** - Partial refresh of progress region
+- **Thread safety added** - Lock prevents concurrent display operations
+- **Auto-jump rendering fixed** - Skips progress updates during clear-first
+
+### Otter Theme Progress
+- **Timer alarm screen** - Added timer-done-icon.png (150x150, displayed on alarm popup)
+- **Delete recipe confirmation** - Already has sad-icon.png
+
+### Otter Icon Opportunities Identified
+Places that could use otter icons (for future):
+| Location | Current State | Suggested Icon |
+|----------|---------------|----------------|
+| Music app - no music | Generic ♪ | Otter with headphones |
+| Timers app - empty | Blank | Relaxed/lounging otter |
+| Recipes app - empty | Blank | Otter chef |
+| Album art placeholder | Generic ♪ | Otter with vinyl |
+| No recipes found | Nothing | Otter with magnifying glass |
+
+### Files Modified
+- `main.py` - Deep refresh, music progress threading, context recipe logic
+- `audio/voice.py` - All voice command patterns expanded with misheard variants
+- `apps/timers.py` - Timer done icon on alarm screen
+- `apps/music.py` - Progress bar partial refresh (already existed, now working)
+
+---
 
 ## Session Notes (2026-02-04) - Voice Control Implementation
 
 ### Voice Control System
 - **Wake word detection**: Porcupine with custom "Hey Ollie" model
 - **Speech-to-text**: faster-whisper (base.en model)
-- **Text-to-speech**: Kokoro (kokoro-onnx) - natural sounding neural TTS
+- **Text-to-speech**: Piper (standalone binary) - fast neural TTS with natural voice
 - **Intent parsing**: Regex-based pattern matching with word number support
 
 ### Voice Commands Implemented
@@ -88,17 +223,19 @@ python main.py
 | temperature | "what's the temperature?" | ✅ Working |
 | time | "what time is it?" | ✅ Working |
 | date | "what's the date?" / "what day is today?" | ✅ Working |
+| refresh_screen | "refresh the screen" / "clear ghosting" / "fix the display" | ✅ Working |
 | spotify_play/pause/skip | (various) | ❌ Blocked (Spotify API unavailable) |
 
 ### New Files Created
-- `audio/tts.py` - Kokoro TTS wrapper
+- `audio/tts.py` - Piper TTS wrapper
 - `audio/weather.py` - Weather API (Open-Meteo) + IP geolocation
-- `models/kokoro/` - Kokoro model files
+- `models/piper/` - Piper model files (auto-downloaded from HuggingFace)
 
 ### Key Technical Details
-- **Kokoro TTS**: Uses kokoro-onnx package with int8 quantized model (~92MB)
-  - Voice: "af_heart" (natural female voice)
-  - Generates WAV, plays via aplay to plughw:2,0
+- **Piper TTS**: Uses standalone Piper binary (not Python package - broken on Python 3.13)
+  - Voice: "en_US-lessac-medium" (natural US English)
+  - Streams raw audio directly to aplay via pipe to plughw:2,0
+  - Fast response (~0.5s latency vs ~3s for Kokoro)
 - **Weather API**: Open-Meteo (free, no API key) + ip-api.com for location
 - **Recipe search**: Word-by-word matching with scoring (handles partial matches)
 - **Word numbers**: Supports "five", "twenty", "thirty-five" etc. in timer commands
@@ -111,9 +248,9 @@ python main.py
 - Amp enable: GPIO pins 22,23 must be set high before TTS playback
 
 ### Known Issues
-- Piper TTS sounds robotic - replaced with Kokoro
-- Kokoro (PyTorch version) won't install on ARM64 - use kokoro-onnx instead
-- onnxruntime GPU warning on Pi (harmless, uses CPU)
+- piper-tts Python package broken on Python 3.13 - use standalone binary instead
+- Download from https://github.com/rhasspy/piper/releases (piper_arm64.tar.gz)
+- Install to ~/bin/ and set LD_LIBRARY_PATH=~/bin
 
 ---
 
@@ -187,37 +324,74 @@ python main.py
 
 ## Hardware Notes
 
-### Speaker Upgrade (Ordered)
-- **Current**: Gikfun 2" 77dB speakers - too quiet
-- **Ordered**: Facmogu 3" 4-Ohm 88dB speakers (~12x louder)
+### Speaker Upgrade (Installed!)
+- **Old**: Gikfun 2" 77dB speakers - too quiet
+- **New**: Facmogu 3" 4-Ohm 88dB speakers (~12x louder) - installed 2026-02-09
 - Same impedance and form factor, drop-in replacement
 
 ### MAX98357A Gain Configuration
-- GAIN pin connected to 3V3 (Pin 17) for maximum 15dB gain
-- Alternative: Pin 14 (GND) for 9dB gain, or float for 12dB
+- GAIN pin connected to GND (Pin 14) = 9 dB gain
 
 ## Hardware TODO
-- [x] Replace speakers with bigger ones (Facmogu 3" 88dB)
+- [x] Replace speakers with bigger ones (Facmogu 3" 88dB) - installed 2026-02-09
 - [ ] Add stereo resistors: 100K ohm (LEFT/Amp2), 330K ohm (RIGHT/Amp1) - see TESTING_NOTES.md
 - [ ] Design case for 3D printing
 
 ## Future Enhancements
+- [x] ~~Cuter TTS voice~~ - Switched to `en_US-hfc_female-medium` (2026-02-09)
 - [ ] Full Spotify API integration (currently on hold - new integrations paused by Spotify)
   - Play/pause/skip controls from the display
   - Search and play tracks by voice
   - Browse playlists and albums
   - Queue management
-- [ ] Recipe import via SMS/text message
-  - Text a recipe URL to the smart display
-  - System uses https://cook.md/ API to convert to CookLang format
-  - Flow:
-    1. User texts just a URL (any recipe website)
-    2. System attempts conversion via cook.md
-    3. If success: replies with numbered category list ("1 - Main Dishes", "2 - Desserts", etc.)
-    4. User replies with number to select category
-    5. Recipe saved to `recipes/<category>/<recipe-name>.cook`
-    6. If failure: friendly error message
-  - Research needed: SMS gateway (Twilio? email-to-SMS? (stretch) another iphone-friendly way to simply click "Share To" and one of the icons is the smart display?)
+
+## Recipe Import via iOS Share Sheet
+
+Import recipes from any website by sharing the URL from your iPhone.
+
+### Setup
+
+1. Install dependencies:
+   ```bash
+   pip install flask recipe-scrapers
+   ```
+
+2. Start the server (for testing):
+   ```bash
+   python scripts/recipe_server.py
+   ```
+
+3. Install as systemd service (auto-start on boot):
+   ```bash
+   sudo cp scripts/recipe-server.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable recipe-server
+   sudo systemctl start recipe-server
+   ```
+
+4. Create iOS Shortcut:
+   - Open Shortcuts app
+   - Create new shortcut
+   - Enable "Show in Share Sheet" → accept URLs
+   - Add "Menu" action with categories: Main Dishes, Sides, Desserts, Breakfast
+   - Add "Get Contents of URL" action:
+     - URL: `http://<pi-ip>:5050/api/recipe`
+     - Method: POST
+     - Headers: Content-Type = application/json
+     - Request Body: JSON with "url" and "category" fields
+   - Add "If" to check success, show appropriate alert
+
+### API Endpoints
+
+- `GET /api/categories` - List available categories
+- `POST /api/recipe` - Import recipe
+  - Body: `{"url": "https://...", "category": "Main Dishes"}`
+  - Returns: `{"success": true, "recipe": "Name", "path": "..."}`
+
+### Supported Sites
+
+Uses `recipe-scrapers` library which supports 606+ recipe websites including:
+AllRecipes, BBC Good Food, Food Network, Serious Eats, etc.
 
 ---
 
@@ -247,7 +421,7 @@ smart-display/
 │   ├── __init__.py
 │   ├── player.py             # AudioPlayer class
 │   ├── voice.py              # VoiceController (wake word + STT + intent parsing)
-│   ├── tts.py                # KokoroTTS (text-to-speech)
+│   ├── tts.py                # PiperTTS (text-to-speech)
 │   └── weather.py            # Weather API integration
 ├── apps/
 │   ├── __init__.py
@@ -257,13 +431,16 @@ smart-display/
 │   ├── timers.py             # TimerApp class
 │   └── music.py              # MusicApp class
 ├── scripts/
-│   └── spotify_event.py      # Librespot onevent callback
+│   ├── spotify_event.py      # Librespot onevent callback
+│   ├── recipe_server.py      # Recipe import webhook server
+│   ├── cooklang_converter.py # Recipe-to-CookLang converter
+│   └── recipe-server.service # Systemd service file
 ├── recipes/                  # CookLang recipe files
 ├── models/
 │   ├── Hey-Ollie_en_raspberry-pi_v4_0_0.ppn  # Porcupine wake word model
-│   ├── kokoro/
-│   │   ├── kokoro-v1.0.int8.onnx            # Kokoro TTS model
-│   │   └── voices-v1.0.bin                   # Kokoro voice data
+│   ├── piper/
+│   │   ├── en_US-lessac-medium.onnx          # Piper TTS model (auto-downloaded)
+│   │   └── en_US-lessac-medium.onnx.json     # Piper config
 │   └── vosk-model-small-en-us-0.15/         # (unused, was for Vosk STT)
 └── assets/
     ├── otter-wallpaper.jpg   # Home screen background
@@ -288,7 +465,7 @@ smart-display/
 | 10 | Wake word | PASS | Porcupine "Hey Ollie" detection working |
 | 11 | Speech-to-text | PASS | faster-whisper transcription working |
 | 12 | Intent parsing | PASS | All voice commands recognized |
-| 13 | Text-to-speech | PASS | Kokoro TTS sounds natural |
+| 13 | Text-to-speech | PASS | Piper TTS fast and natural |
 | 14 | Weather API | PASS | Open-Meteo returns correct data |
 
 ---
@@ -312,7 +489,7 @@ smart-display/
 - Buttons: Up=26, Down=16
 - Amp SD pins: 22, 23 (drive high to enable)
 - I2S BCLK: 18 (set to a2 mode)
-- Amp GAIN: 17 (3V3 for max gain)
+- Amp GAIN: Pin 14 (GND, 9 dB)
 
 ### Spotify Connect
 - Raspotify service: `sudo systemctl status raspotify`
@@ -379,8 +556,8 @@ speaker-test -D hw:2,0 -t sine -f 440 -c 2 -l 1
 
 ## Next Steps
 
-1. **Final integration testing** - Test all voice commands end-to-end
-2. **Install larger speakers** - Facmogu 3" 88dB speakers (ordered)
+1. **Final integration testing** - Test all voice commands end-to-end, verify voice status icons
+2. ~~**Install larger speakers**~~ - Done! Facmogu 3" 88dB speakers installed
 3. **Add stereo resistors** - 100K (LEFT), 330K (RIGHT) for stereo separation
 4. **Design and 3D print case**
 5. **Spotify API** - Wait for Spotify to re-enable new integrations

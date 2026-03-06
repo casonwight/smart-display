@@ -15,12 +15,12 @@ Button 2,GND,Black,Ground,Pin 25
 Rotary Encoder,OUT A,Orange,GPIO 5,Pin 29
 Rotary Encoder,OUT B,Green,GPIO 6,Pin 31
 Rotary Encoder,SWITCH,Red,GPIO 13,Pin 33
-Rotary Encoder,GND,Yellow,Ground,Pin 30
-Rotary Encoder,GND,Brown,Ground,Pin 34
+Rotary Encoder,GND,Brown,Ground,Pin 30
+Rotary Encoder,GND,Yellow,Ground,Pin 34
 Amp 1,LRC,White,GPIO 19,Pin 35
 Amp 1,BCLK,Grey,GPIO 18,Pin 12
 Amp 1,DIN,Purple,GPIO 21,Pin 40
-Amp 1,GAIN,Blue,3V3 Power,Pin 17
+Amp 1,GAIN,Blue,Ground,Pin 14
 Amp 1,SD,Green,GPIO 22,Pin 15
 Amp 1,GND,Yellow,Ground,Pin 6
 Amp 1,VIN,Orange,5V Power,Pin 2

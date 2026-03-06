@@ -89,69 +89,91 @@ class IntentParser:
         # Build pattern list with extractors
         self.PATTERNS = {
             # === TIMER COMMANDS ===
+            # "timer" variants: timer, time or, time her, tamer, timor, tie more, dimer, time are, tie mer
+            # Using regex group for timer variants to keep patterns readable
             "timer_start": [
                 # "set a timer for 5 minutes" / "start timer for thirty seconds"
-                (re.compile(rf"(?:start|set|add|create|make)\s+(?:a\s+)?timer\s+(?:for\s+)?{self.NUM_PATTERN}\s*(minutes?|mins?|seconds?|secs?|hours?|hrs?)", re.I),
+                # "set" variants: set, said, sat, sit, sept
+                # "start" variants: start, started, star, stark
+                (re.compile(rf"(?:start|started|star|stark|set|said|sat|sit|add|create|make)\s+(?:a\s+)?(?:timer|time or|time her|tamer|timor|tie more|dimer|time are|tie mer)\s+(?:for\s+)?{self.NUM_PATTERN}\s*(minutes?|mins?|seconds?|secs?|hours?|hrs?)", re.I),
                  self._extract_timer_duration),
                 # "5 minute timer" / "ten minute timer"
-                (re.compile(rf"{self.NUM_PATTERN}\s*(minutes?|mins?|seconds?|secs?|hours?|hrs?)\s+timer", re.I),
+                (re.compile(rf"{self.NUM_PATTERN}\s*(minutes?|mins?|seconds?|secs?|hours?|hrs?)\s+(?:timer|time or|time her|tamer|timor|tie more|dimer|time are|tie mer)", re.I),
                  self._extract_timer_duration),
             ],
             "timer_pause": [
                 # "pause the timer" / "pause my timer" / "pause the first timer"
-                (re.compile(r"pause\s+(?:the\s+|my\s+)?(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?timer", re.I),
+                # "pause" variants: pause, paws, paused, pos, pours, cause, pas, poss, pawns
+                (re.compile(r"(?:pause|paws|paused|pos|pours|cause|pas|poss|pawns)\s+(?:the\s+|my\s+)?(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?(?:timer|time or|time her|tamer|timor|tie more|dimer|time are|tie mer)", re.I),
                  self._extract_timer_ordinal),
             ],
             "timer_resume": [
                 # "resume the timer" / "unpause my timer" / "continue the timer"
-                (re.compile(r"(?:resume|unpause|continue|start)\s+(?:the\s+|my\s+)?(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?timer", re.I),
+                # "resume" variants: resume, resumed, reason, presume, we zoom, ree zoom, re zoom, result
+                # "unpause" variants: unpause, on pause, and pause, un pause
+                # "continue" variants: continue, continued, can continue
+                (re.compile(r"(?:resume|resumed|reason|presume|we zoom|ree zoom|re zoom|result|unpause|un pause|on pause|and pause|continue|continued|can tinue)\s+(?:the\s+|my\s+)?(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?(?:timer|time or|time her|tamer|timor|tie more|dimer|time are|tie mer)", re.I),
                  self._extract_timer_ordinal),
             ],
             "timer_stop": [
                 # "stop the timer" / "cancel timer" / "delete the timer"
-                # With optional ordinal: "cancel the first timer" / "stop my second timer"
-                (re.compile(r"(?:stop|cancel|delete|clear)\s+(?:the\s+|my\s+)?(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?(?:timer|timers)", re.I),
+                # "stop" variants: stop, stopped, stall, stuff
+                # "cancel" variants: cancel, cancelled, counsel, console, cancels, can sell, can so, cans all
+                # "delete" variants: delete, deleted, the leet, de leet
+                # "clear" variants: clear, cleared, clears, cler
+                (re.compile(r"(?:stop|stopped|stall|cancel|cancelled|counsel|console|cancels|can sell|cans all|delete|deleted|the leet|clear|cleared|clears)\s+(?:the\s+|my\s+)?(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?(?:timer|timers|time or|time ors|time her|time hers|tamer|tamers|timor|tie more|dimer|dimers|time are|tie mer)s?", re.I),
                  self._extract_timer_ordinal),
             ],
             "timer_stop_all": [
                 # "cancel all timers" / "clear all timers"
-                (re.compile(r"(?:stop|cancel|delete|clear)\s+all\s+(?:the\s+)?timers?", re.I),
+                (re.compile(r"(?:stop|stopped|cancel|cancelled|counsel|console|can sell|cans all|delete|deleted|clear|cleared|clears)\s+all\s+(?:the\s+)?(?:timer|timers|time or|time ors|time her|time hers|tamer|tamers|timor|tie more|dimer|dimers|time are|tie mer)s?", re.I),
                  lambda m: {}),
             ],
             "timer_status": [
                 # "how much time is left" / "timer status" / "check the timer"
                 # Also: "how much time is left on my timer" / "how much time has left"
-                (re.compile(r"(?:how\s+much\s+time\s+(?:is|has)?\s*(?:left|remaining)(?:\s+on\s+(?:the|my)\s+(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?timer)?|timer\s+status|check\s+(?:the|my)\s+(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?timer|what.s\s+(?:the|my)\s+timer)", re.I),
+                (re.compile(r"(?:how\s+much\s+time\s+(?:is|has|as)?\s*(?:left|remaining|laughed)(?:\s+on\s+(?:the|my|of)\s+(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?(?:timer|time or|time her|tamer|timor|tie more|dimer))?|(?:timer|time or|time her|tamer|timor)\s+status|check\s+(?:the|my|of)\s+(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?(?:timer|time or|time her|tamer|timor)|what.s\s+(?:the|my)\s+(?:timer|time or|time her|tamer|timor))", re.I),
                  self._extract_timer_ordinal),
             ],
             "timer_count": [
                 # "how many timers" / "how many timers do I have"
-                (re.compile(r"how\s+many\s+timers", re.I),
+                (re.compile(r"how\s+many\s+(?:timer|timers|time or|time ors|time her|time hers|tamer|tamers|timor|tie more|dimer|dimers)s?", re.I),
                  lambda m: {}),
             ],
             "timer_add_time": [
                 # "add 5 minutes to the timer" / "add 5 minutes to my timer"
-                (re.compile(rf"add\s+{self.NUM_PATTERN}\s*(minutes?|mins?|seconds?|secs?)\s+(?:to\s+)?(?:the|my)\s+(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?timer", re.I),
+                # "add" variants: add, at, had, and, ad, odd
+                (re.compile(rf"(?:add|at|had|and|ad|odd)\s+{self.NUM_PATTERN}\s*(minutes?|mins?|seconds?|secs?)\s+(?:to\s+)?(?:the|my)\s+(?:(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+)?(?:timer|time or|time her|tamer|timor|tie more|dimer|time are|tie mer)", re.I),
                  self._extract_timer_duration_with_ordinal),
             ],
 
             # === RECIPE COMMANDS ===
             "recipe_show": [
                 # "show me the chocolate chip cookie recipe" / "go to the cookies recipe"
-                (re.compile(r"(?:show|find|open|display|pull up|get|go\s+to)\s+(?:me\s+)?(?:the\s+)?(.+?)\s+recipe", re.I),
+                # "recipe" variants: recipe, recipes, recipe's, rest a pea, rest of pea, wrist of pea, recipe ease
+                # "show" variants: show, showed, cho, shell, joe (NOT "so" - too common)
+                # "find" variants: find, found, fine, fined
+                # "open" variants: open, opened, oh pen, hoping, opin
+                (re.compile(r"(?:show|showed|cho|shell|find|found|fine|fined|open|opened|oh pen|hoping|opin|display|displayed|pull up|pulled up|get|got|go\s+to)\s+(?:me\s+)?(?:the\s+)?(.+?)\s+(?:recipe|recipes|recipe's|rest a pea|rest of pea|wrist of pea|recipe ease)", re.I),
                  self._extract_recipe_name),
                 # "show recipe for chocolate chip cookies"
-                (re.compile(r"(?:show|find|open|get|go\s+to)\s+(?:the\s+)?recipe\s+(?:for|about)\s+(.+)", re.I),
+                (re.compile(r"(?:show|showed|cho|shell|find|found|fine|open|opened|oh pen|get|got|go\s+to)\s+(?:the\s+)?(?:recipe|recipes|recipe's)\s+(?:for|about|four|fur)\s+(.+)", re.I),
                  self._extract_recipe_name),
                 # "how do I make pancakes" / "how to make cookies"
-                (re.compile(r"how\s+(?:do\s+(?:I|you)\s+)?(?:make|cook|bake|prepare)\s+(.+)", re.I),
+                # "make" variants: make, makes, bake, fake, take (but careful with take)
+                # "cook" variants: cook, cooks, cooked, kook
+                (re.compile(r"how\s+(?:do\s+(?:I|you|we)\s+)?(?:make|bake|cook|prepare|prepared)\s+(.+)", re.I),
                  self._extract_recipe_name),
             ],
             "recipe_ingredients": [
                 # "what's in the pancakes recipe" / "what ingredients for cookies"
-                (re.compile(r"what(?:'s| is| are)\s+(?:in\s+)?(?:the\s+)?(.+?)\s+recipe", re.I),
+                # "ingredients" variants: ingredients, ingredient, in gradient, in greedient
+                (re.compile(r"what(?:'s| is| are)\s+(?:in\s+)?(?:the\s+)?(.+?)\s+(?:recipe|recipes|recipe's)", re.I),
                  self._extract_recipe_name),
-                (re.compile(r"(?:what\s+)?ingredients\s+(?:for|in)\s+(?:the\s+)?(.+)", re.I),
+                (re.compile(r"(?:what\s+)?(?:ingredients?|in gradient|in greedient)\s+(?:for|in|four)\s+(?:the\s+)?(.+)", re.I),
+                 self._extract_recipe_name),
+                # "what do I need for pancakes"
+                (re.compile(r"what\s+do\s+I\s+need\s+(?:for|to\s+make)\s+(?:the\s+)?(.+)", re.I),
                  self._extract_recipe_name),
             ],
             "recipe_cook_time": [
@@ -187,100 +209,187 @@ class IntentParser:
             ],
             "category_browse": [
                 # "show me desserts" / "what desserts do we have"
-                (re.compile(r"(?:show|list|display)\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?(\w+(?:\s+\w+)?)", re.I),
+                # "show" variants: show, showed, cho, shell (NOT "so" - too common)
+                # "breakfast" variants: breakfast, break fast, brake fast
+                # "desserts" variants: desserts, deserts, the shirts, dessert, desert
+                # "dinner" variants: dinner, diner, thinner
+                (re.compile(r"(?:show|showed|cho|shell|list|listed|display|displayed)\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?(\w+(?:\s+\w+)?)", re.I),
                  self._extract_category),
-                (re.compile(r"what\s+(\w+(?:\s+\w+)?)\s+(?:do\s+we\s+have|are\s+there|recipes?)", re.I),
+                (re.compile(r"(?:what|watch|watts)\s+(\w+(?:\s+\w+)?)\s+(?:do\s+we\s+have|are\s+there|recipes?)", re.I),
                  self._extract_category),
-                (re.compile(r"what(?:'s| is)\s+for\s+(dinner|breakfast|lunch|dessert)", re.I),
+                (re.compile(r"(?:what(?:'s| is)|watch)\s+for\s+(dinner|diner|breakfast|break fast|brake fast|lunch|launch|dessert|desert|the shirt|supper|super)", re.I),
+                 self._extract_category),
+                # "browse desserts" / "browse breakfast"
+                (re.compile(r"(?:browse|brows|brose)\s+(?:the\s+)?(\w+(?:\s+\w+)?)", re.I),
                  self._extract_category),
             ],
 
             # === NAVIGATION COMMANDS ===
             "go_home": [
                 # "go home" / "go to home" / "home screen"
-                (re.compile(r"(?:go\s+)?(?:to\s+)?home(?:\s+screen)?", re.I),
+                # "home" variants: home, hone, ohm, comb, dome, foam, roam,holm, holm
+                # "go" variants: go, oh, no, lo (NOT "so" - too common)
+                (re.compile(r"(?:go|oh|no)\s+(?:to\s+)?(?:home|hone|ohm|comb|dome|foam|roam|holm)(?:\s+screen)?", re.I),
+                 lambda m: {}),
+                # Just "home" by itself
+                (re.compile(r"^(?:home|hone|ohm|comb|dome|holm)(?:\s+screen)?$", re.I),
                  lambda m: {}),
             ],
             "go_back": [
                 # "go back" / "back"
-                (re.compile(r"(?:go\s+)?back", re.I),
+                # "back" variants: back, beck, bak, buck, pack, lack, bac, vac, bock, bach
+                # "go" variants: go, oh, no
+                (re.compile(r"(?:go|oh|no)\s+(?:back|beck|bak|buck|bac|bock|bach)", re.I),
+                 lambda m: {}),
+                # Just "back" by itself
+                (re.compile(r"^(?:back|beck|bak|bac|bock|bach)$", re.I),
                  lambda m: {}),
             ],
             "open_menu": [
                 # "open menu" / "show menu" / "main menu"
-                (re.compile(r"(?:open|show|go\s+to)\s+(?:the\s+)?(?:main\s+)?menu", re.I),
+                # "menu" variants: menu, men you, venue, men u, ben you, many you, manu
+                # "open" variants: open, opened, oh pen, hoping, oh been, opin
+                # "main" variants: main, mane, men, mine
+                (re.compile(r"(?:open|opened|oh pen|hoping|opin|show|showed|go\s+to)\s+(?:the\s+)?(?:main|mane|men|mine\s+)?(?:menu|men you|venue|ben you|many you|manu)", re.I),
+                 lambda m: {}),
+                # Just "menu" or "main menu" by itself
+                (re.compile(r"^(?:main|mane|men|mine\s+)?(?:menu|men you|venue|ben you|manu)$", re.I),
                  lambda m: {}),
             ],
             "open_timers": [
                 # "open timers" / "go to timers" / "show me my timer"
-                (re.compile(r"(?:open|show|go\s+to)\s+(?:the\s+|my\s+|me\s+(?:the\s+|my\s+)?)?timers?", re.I),
+                # Using full timer variants from above
+                (re.compile(r"(?:open|opened|oh pen|hoping|opin|show|showed|go\s+to)\s+(?:the\s+|my\s+|me\s+(?:the\s+|my\s+)?)?(?:timer|timers|time or|time ors|time her|time hers|tamer|tamers|timor|tie more|dimer|dimers|time are|tie mer)s?", re.I),
                  lambda m: {}),
             ],
             "open_recipes": [
                 # "open recipes" / "go to recipes"
-                (re.compile(r"(?:open|show|go\s+to)\s+(?:the\s+)?recipes?", re.I),
+                # "recipes" variants: recipes, recipe, rest of peace, rest of peas, wrist of peas, recipe ease, recipe's, rest a peas
+                (re.compile(r"(?:open|opened|oh pen|hoping|opin|show|showed|go\s+to)\s+(?:the\s+)?(?:recipes?|recipe's|rest of peace|rest of peas|rest a peas|wrist of peas|recipe ease)", re.I),
                  lambda m: {}),
             ],
             "open_music": [
                 # "open music" / "go to music"
-                (re.compile(r"(?:open|show|go\s+to)\s+(?:the\s+)?music", re.I),
+                # "music" variants: music, muse ick, museums, muse it, muse sick, use it, you sick, mu sic, new sick
+                (re.compile(r"(?:open|opened|oh pen|hoping|opin|show|showed|go\s+to)\s+(?:the\s+)?(?:music|muse ick|muse sick|museums|muse it|mu sic|new sick)", re.I),
                  lambda m: {}),
             ],
 
             # === WEATHER COMMANDS ===
             "weather": [
                 # "what's the weather" / "how's the weather"
-                (re.compile(r"(?:what(?:'s| is)|how(?:'s| is))\s+(?:the\s+)?weather", re.I),
+                # "weather" variants: weather, whether, wetter, feather, leather, whither, with her
+                # "what's" variants: what's, what is, watts, was, watch
+                (re.compile(r"(?:what(?:'s| is)|how(?:'s| is)|watts|watch)\s+(?:the\s+)?(?:weather|whether|wetter|feather|whither|with her)", re.I),
                  lambda m: {"type": "full"}),
                 # "what's the weather today/outside"
-                (re.compile(r"(?:what(?:'s| is)|how(?:'s| is))\s+(?:the\s+)?weather\s+(?:like\s+)?(?:today|outside|out)", re.I),
+                (re.compile(r"(?:what(?:'s| is)|how(?:'s| is)|watts|watch)\s+(?:the\s+)?(?:weather|whether|wetter|feather|whither)\s+(?:like\s+)?(?:today|outside|out|to day)", re.I),
                  lambda m: {"type": "full"}),
                 # "is it going to rain" / "will it rain"
-                (re.compile(r"(?:is\s+it\s+going\s+to|will\s+it)\s+rain", re.I),
+                (re.compile(r"(?:is\s+it\s+going\s+to|will\s+it|isn't\s+going\s+to)\s+(?:rain|raining|rained|rainy)", re.I),
                  lambda m: {"type": "rain"}),
+                # Just "weather" by itself
+                (re.compile(r"^(?:weather|whether|wetter|feather|whither)$", re.I),
+                 lambda m: {"type": "full"}),
             ],
             "temperature": [
                 # "what's the temperature" / "how hot is it"
-                (re.compile(r"(?:what(?:'s| is))\s+(?:the\s+)?(?:temperature|temp)", re.I),
+                # "temperature" variants: temperature, temp, tempature, temper chur, tempiture, temperature, temprature
+                (re.compile(r"(?:what(?:'s| is)|watts|watch)\s+(?:the\s+)?(?:temperature|temp|tempature|temper chur|tempiture|temprature)", re.I),
                  lambda m: {}),
-                (re.compile(r"how\s+(?:hot|cold|warm)\s+is\s+it", re.I),
+                # "how hot/cold/warm is it" variants
+                (re.compile(r"how\s+(?:hot|cold|warm|called|hold)\s+is\s+it", re.I),
                  lambda m: {}),
-                (re.compile(r"(?:what(?:'s| is))\s+(?:the\s+)?(?:temperature|temp)\s+(?:outside|out)", re.I),
+                (re.compile(r"(?:what(?:'s| is)|watts|watch)\s+(?:the\s+)?(?:temperature|temp|tempature|tempiture)\s+(?:outside|out)", re.I),
+                 lambda m: {}),
+                # Just "temperature" or "temp" by itself
+                (re.compile(r"^(?:temperature|temp|tempature|tempiture)$", re.I),
                  lambda m: {}),
             ],
 
             # === TIME COMMANDS ===
             "time": [
                 # "what time is it" / "what's the time"
-                (re.compile(r"what(?:\s+time\s+is\s+it|'s\s+the\s+time)", re.I),
+                # "time" variants for context: mostly standard, but "what" can vary
+                (re.compile(r"(?:what|watch|watts)\s+time\s+is\s+it", re.I),
+                 lambda m: {}),
+                (re.compile(r"what's\s+the\s+time", re.I),
+                 lambda m: {}),
+                # "the time" by itself (but not just "time" - too common)
+                (re.compile(r"^the\s+time$", re.I),
+                 lambda m: {}),
+                # "tell me the time" variants
+                (re.compile(r"(?:tell|fell|yell)\s+me\s+the\s+time", re.I),
                  lambda m: {}),
             ],
             "date": [
                 # "what's the date" / "what day is it" / "what's the day" / "what day is today"
-                (re.compile(r"what(?:'s|\s+is)\s+(?:the\s+)?(?:date|today|day)", re.I),
+                # "date" variants: date, day (in context)
+                (re.compile(r"(?:what(?:'s|\s+is)|watts|watch)\s+(?:the\s+)?(?:date|today|day)", re.I),
                  lambda m: {}),
-                (re.compile(r"what\s+day\s+is\s+(?:it|today)", re.I),
+                (re.compile(r"(?:what|watch|watts)\s+day\s+is\s+(?:it|today|to day)", re.I),
+                 lambda m: {}),
+                # "the date" by itself (but not just "date" - too common)
+                (re.compile(r"^the\s+date$", re.I),
+                 lambda m: {}),
+                # "tell me the date" variants
+                (re.compile(r"(?:tell|fell|yell)\s+me\s+the\s+date", re.I),
                  lambda m: {}),
             ],
 
             # === SPOTIFY COMMANDS (paused but keep patterns) ===
             "spotify_play": [
                 # "play shape of you" / "play taylor swift"
-                (re.compile(r"play\s+(.+?)(?:\s+on\s+spotify)?$", re.I),
+                # "play" variants: play, played, please, plays, clay, flay, slay, pray, lay
+                # Being careful not to include "plate" (kitchen) but including "pray" which is unlikely in music context
+                (re.compile(r"(?:play|played|plays|please play|clay|flay|slay|pray)\s+(.+?)(?:\s+on\s+spotify)?$", re.I),
                  lambda m: {"query": m.group(1).strip()}),
             ],
             "spotify_pause": [
                 # "pause the music" / "stop the music" / "pause"
-                (re.compile(r"(?:pause|stop)\s+(?:the\s+)?(?:music|song|track|playback)", re.I),
+                # "pause" variants: pause, paws, paused, pos, pours, cause, pas, poss, pawns, boss, pausing
+                # "music" variants: music, muse ick, muse sick, mu sic
+                (re.compile(r"(?:pause|paws|paused|pos|pours|cause|pas|poss|pawns|pausing)\s+(?:the\s+)?(?:music|muse ick|muse sick|mu sic|song|track|playback)", re.I),
                  lambda m: {}),
-                (re.compile(r"^pause$", re.I),
+                (re.compile(r"^(?:pause|paws|paused|pos|pours|cause|pas|poss|pawns)$", re.I),
+                 lambda m: {}),
+                # "stop music" variants
+                (re.compile(r"(?:stop|stopped|stuff)\s+(?:the\s+)?(?:music|muse ick|muse sick|mu sic|song|track|playback)", re.I),
                  lambda m: {}),
             ],
             "spotify_skip": [
                 # "skip" / "next track" / "next song" / "skip this"
-                (re.compile(r"(?:skip|next)\s*(?:this\s+)?(?:track|song)?", re.I),
+                # "skip" variants: skip, skipped, skips, skipping, script (risky but including), scip, scape
+                # "next" variants: next, necks, nest, nets, nex
+                (re.compile(r"(?:skip|skipped|skips|skipping|scip|next|necks|nest|nets|nex)\s*(?:this\s+)?(?:track|song|one)?", re.I),
                  lambda m: {}),
-                (re.compile(r"^(?:skip|next)$", re.I),
+                (re.compile(r"^(?:skip|skipped|skips|next|necks|nest|nex)$", re.I),
+                 lambda m: {}),
+                # "next song/track" specific
+                (re.compile(r"(?:next|necks|nest|nex)\s+(?:song|track|one)", re.I),
+                 lambda m: {}),
+            ],
+
+            # === DISPLAY COMMANDS ===
+            "refresh_screen": [
+                # "refresh" by itself (and common misheard variants from Whisper)
+                # Pattern: [re/we/we're/read/please/free/lee] + [fresh/flash/slash/sash] or similar
+                (re.compile(r"^(?:refresh|re fresh|re flash|re slash|re sash|we fresh|we flash|we slash|we sash|we're fresh|we're flash|we're slash|we're sash|read fresh|read flash|read slash|read sash|please fresh|please flash|please slash|please sash|free fresh|free flash|free slash|free sash|lee fresh|lee flash|lee slash|lee sash|we stretch|leaf trash)$", re.I),
+                 lambda m: {}),
+                # "refresh the screen" / "refresh the display" (and misheard variants)
+                (re.compile(r"(?:refresh|re fresh|re flash|re slash|re sash|we fresh|we flash|we slash|we sash|we're fresh|we're flash|we're slash|we're sash|read fresh|read flash|read slash|read sash|please fresh|please flash|please slash|please sash|free fresh|free flash|free slash|free sash|lee fresh|lee flash|lee slash|lee sash|we stretch|leaf trash)\s+(?:the\s+)?(?:screen|display)", re.I),
+                 lambda m: {}),
+                # "clear the screen" / "clear the display" / "clear ghosting"
+                (re.compile(r"clear\s+(?:the\s+)?(?:screen|display|ghosting)", re.I),
+                 lambda m: {}),
+                # "fix the screen" / "fix the display"
+                (re.compile(r"fix\s+(?:the\s+)?(?:screen|display)", re.I),
+                 lambda m: {}),
+                # "full refresh" / "do a full refresh"
+                (re.compile(r"(?:do\s+a\s+)?full\s+refresh", re.I),
+                 lambda m: {}),
+                # "reset the screen" / "reset the display"
+                (re.compile(r"reset\s+(?:the\s+)?(?:screen|display)", re.I),
                  lambda m: {}),
             ],
         }
@@ -394,6 +503,8 @@ class IntentParser:
             return None
 
         text = text.strip()
+        # Strip trailing punctuation that Whisper sometimes adds
+        text = text.rstrip('.!?,;:')
 
         for intent, patterns in self.PATTERNS.items():
             for pattern, extractor in patterns:
@@ -408,7 +519,7 @@ class IntentParser:
 class VoiceController:
     """Orchestrates wake word detection and command processing."""
 
-    def __init__(self, on_command_callback: Callable[[str, Dict[str, Any]], None], audio_player=None):
+    def __init__(self, on_command_callback: Callable[[str, Dict[str, Any]], None], audio_player=None, on_status_callback=None):
         """
         Initialize the voice controller.
 
@@ -416,9 +527,12 @@ class VoiceController:
             on_command_callback: Called when a command is recognized.
                                  Receives (intent: str, params: dict)
             audio_player: Optional AudioPlayer instance for feedback beeps
+            on_status_callback: Optional callback for voice status changes.
+                                Receives status string: "listening", "thinking", "command_done", "idle"
         """
         self.on_command = on_command_callback
         self.audio = audio_player
+        self.on_status = on_status_callback
         self.intent_parser = IntentParser()
 
         self._running = False
@@ -590,27 +704,39 @@ class VoiceController:
             return
         self._last_wake_time = now
 
+        # Show listening icon first (non-blocking, refreshes during beep)
+        if self.on_status:
+            self.on_status("listening")
+
         # Play confirmation beep
         if self.audio:
             self.audio.beep(frequency=880, duration_ms=150, volume=0.6)
 
-        # Record command audio
+        # Record command audio - starts immediately after beep
         print(f"  [Listening for command...]")
         audio_data = self._record_audio(duration=COMMAND_RECORD_SECONDS, for_wake_word=False)
 
         if not audio_data:
             print(f"  [Failed to record command]")
             self._play_error_tone()
+            if self.on_status:
+                self.on_status("idle")
             return
 
         # Save to file for Whisper
         self._save_wav(audio_data, self._recording_path)
+
+        # Show thinking icon (recording done, now processing)
+        if self.on_status:
+            self.on_status("thinking")
 
         # Transcribe with Whisper
         text = self._transcribe_audio(self._recording_path)
         if not text:
             print(f"  [Transcription failed or empty]")
             self._play_error_tone()
+            if self.on_status:
+                self.on_status("confused")
             return
 
         print(f"  [Transcribed: '{text}']")
@@ -623,9 +749,14 @@ class VoiceController:
             # Call the callback
             if self.on_command:
                 self.on_command(command.intent, command.params)
+            # Signal that command processing is complete
+            if self.on_status:
+                self.on_status("command_done")
         else:
             print(f"  [No matching intent for: '{text}']")
             self._play_error_tone()
+            if self.on_status:
+                self.on_status("confused")
 
     def _record_audio(self, duration: float, for_wake_word: bool = False) -> Optional[bytes]:
         """Record audio from the microphone using arecord."""
